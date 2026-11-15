@@ -660,7 +660,7 @@ MEDIA_POSTER_AT = 0.10
 
 
 def _media_poster_dir() -> Path:
-    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    base = _local_data.records_base()
     return Path(state_root(Path(base) / "hermes")) / "media-posters"
 
 

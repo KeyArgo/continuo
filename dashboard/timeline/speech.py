@@ -28,6 +28,11 @@ _child_env_spec = _child_env_import.spec_from_file_location(
 _child_env_module = _child_env_import.module_from_spec(_child_env_spec)
 _child_env_spec.loader.exec_module(_child_env_module)
 child_env = _child_env_module.child_env
+# w41-mac-b item 1 (PR #2 by @ShawnCRMer): the one rule for this machine's own folders (dashboard/local_data).
+_local_data_spec = _child_env_import.spec_from_file_location(
+    "film_suite_local_data", Path(__file__).resolve().parents[1] / "local_data" / "__init__.py")
+local_data = _child_env_import.module_from_spec(_local_data_spec)
+_local_data_spec.loader.exec_module(local_data)
 
 ENGINE_ID = "silero-vad-6.2"
 MODEL_SHA256 = "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
@@ -51,7 +56,7 @@ def engine_dir() -> Path:
     override = os.environ.get("FILM_SUITE_SPEECH_ENGINE_DIR")
     if override:
         return Path(override)
-    base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    base = local_data.engines_base()
     return Path(base) / "hermes" / "film-suite" / "engines" / "silero-vad"
 
 

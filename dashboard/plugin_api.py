@@ -258,3 +258,4 @@ router.include_router(_styles_module.create_style_router(
 _load_route_area("shared/dependencies_1.py", globals())  # dependency readiness on a fresh machine (lane w19-g1fresh)
 _load_route_area("media/take_file_1.py", globals())  # a V4 take has its file in the media feed (lane w24-rest VID-030)
 _load_route_area("generation/jobs_audio_1.py", globals())  # /jobs/list lists the Audio runs (stems, analysis, song map, subtitles) like the Jobs popover (lane w24-rest)
+_load_route_area("shared/settings_1.py", globals())  # engine settings: one read and one write path, Hermes' writer (lane w41-settings, HER-091)

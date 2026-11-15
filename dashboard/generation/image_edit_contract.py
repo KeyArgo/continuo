@@ -289,8 +289,8 @@ EDIT_TARGETS: dict[str, dict[str, Any]] = {
         "family": "flux3-klein",
         "variant": "edit-distilled",
         "preset": "distilled",
-        "capability_manifest_sha256": "556918b29fd41c39446756691d2a8bca448a76b7baf4650fe9184d7532db74a8",
-        "api_graph_sha256": "a85e210bf111c875898c82a52420255e5e09204544c540607e0f320485855084",
+        "capability_manifest_sha256": "8b27a9d8d72eab2d0f569399a6a4193b574b7532436f5b373f625353de9fac72",
+        "api_graph_sha256": "67d4d505fb9ebf37c886ebe851dc6f55c080a7cf4f7b512f30810fe57e66e9b9",
         "grid": 16,
         "work_resolution": 1024,
         "files": {

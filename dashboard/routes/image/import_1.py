@@ -15,6 +15,8 @@ class ImageImportRequest(_ProjectRequest):
     # 64 MB of picture bytes, base64 (image_import.MAX_SOURCE_B64).
     data_b64: str | None = Field(default=None, min_length=8, max_length=89_478_488)
     file_name: str | None = Field(default=None, max_length=255)
+    # Lane w41-safe2 (VID-173): the path is one file the artist chose in the app's open dialog; only it is read.
+    picked: bool = False
 
 
 @project_router.post("/projects/image-producer/import")
@@ -36,12 +38,22 @@ async def image_producer_import(request: ImageImportRequest) -> Any:
             return refuse("invalid_import", "Needs exactly one of a file path or picture bytes")
         try:
             if request.path is not None:
-                if not request.approved_roots:
+                if request.picked:
+                    # Lane w41-safe2 (VID-173): one picture the artist chose in the app's open dialog (a keyframe from a
+                    # folder the project does not know) is copied in by itself; its folder is not approved. Page only,
+                    # and never a file inside a folder taken back in Hermes Settings > Plugins (MED-102).
+                    if _film_caller() == "hermes" or _approved_roots_module.in_revoked(request.path, _folder_grants().revoked()):
+                        return JSONResponse(status_code=403, content=_folder_refusal())
+                    if not os.path.isabs(request.path) or request.path.startswith(("\\\\", "//")):
+                        return refuse("path_refused", imported.OUTSIDE_ROOTS)
+                    roots = [os.path.dirname(os.path.abspath(request.path))]
+                elif not request.approved_roots:
                     return refuse("path_refused", imported.OUTSIDE_ROOTS)
-                try:
-                    roots = _request_roots(request.approved_roots, request.project_ref, path=request.path)
-                except _FolderNotApproved:
-                    return JSONResponse(status_code=403, content=_folder_refusal())
+                else:
+                    try:
+                        roots = _request_roots(request.approved_roots, request.project_ref, path=request.path)
+                    except _FolderNotApproved:
+                        return JSONResponse(status_code=403, content=_folder_refusal())
                 data, name = await asyncio.to_thread(imported.read_local, request.path, roots,
                                                      _confined_local_path)
             else:

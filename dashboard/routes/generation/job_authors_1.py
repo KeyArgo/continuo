@@ -30,7 +30,7 @@ def _caller_by(by: Any) -> str:
 
 
 def _job_authors_path() -> Path:
-    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    base = _local_data.records_base()
     return Path(state_root(Path(base) / "hermes")) / "job-authors.sqlite3"
 
 

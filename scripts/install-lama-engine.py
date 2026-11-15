@@ -48,8 +48,18 @@ def _load_engine_process():
 engine_process = _load_engine_process()
 
 
+def _machine_local() -> str:
+    """LOCALAPPDATA, else ~/Library/Application Support on macOS, else ~/AppData/Local (dashboard/local_data
+    engines_base, inline: this script stands alone; PR #2 by @ShawnCRMer)."""
+    if os.environ.get("LOCALAPPDATA"):
+        return os.environ["LOCALAPPDATA"]
+    if sys.platform == "darwin":
+        return os.path.join(os.path.expanduser("~"), "Library", "Application Support")
+    return str(Path.home() / "AppData" / "Local")
+
+
 def default_engine_dir() -> Path:
-    base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    base = _machine_local()
     return Path(base) / "hermes" / "film-suite" / "engines" / "lama-inpaint"
 
 
@@ -69,7 +79,7 @@ def venv_python(venv: Path) -> Path:
 
 
 def probe(py: Path) -> dict:
-    code = "import json, torch, numpy, PIL; print(json.dumps({'torch': torch.__version__, 'numpy': numpy.__version__, 'pillow': PIL.__version__, 'cuda': torch.cuda.is_available()}))"
+    code = "import json, torch, numpy, PIL; print(json.dumps({'torch': torch.__version__, 'numpy': numpy.__version__, 'pillow': PIL.__version__, 'cuda': torch.cuda.is_available(), 'mps': bool(getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available())}))"
     out = subprocess.run([str(py), "-c", code], capture_output=True, text=True, timeout=300, env=engine_process.engine_env())
     if out.returncode != 0:
         raise SystemExit(f"the venv python cannot import torch/numpy/PIL: {out.stderr.strip()[-300:]}")

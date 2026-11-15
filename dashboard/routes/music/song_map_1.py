@@ -37,7 +37,7 @@ class SongMapStartRequest(BaseModel):
 
 
 def _song_map_cache_dir() -> Path:
-    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    base = _local_data.records_base()
     return Path(state_root(Path(base) / "hermes")) / "song-map"
 
 

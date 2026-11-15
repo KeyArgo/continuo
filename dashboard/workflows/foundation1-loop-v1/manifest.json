@@ -81,6 +81,15 @@
     ],
     "seed": [
      "/6/inputs/seed"
+    ],
+    "seconds_total": [
+     "/10/inputs/seconds_total"
+    ],
+    "latent_seconds": [
+     "/5/inputs/seconds"
+    ],
+    "trim": [
+     "/11/inputs/duration"
     ]
    },
    "fixed": {
@@ -97,10 +106,7 @@
     "/11/inputs/start_index": 0.0,
     "/13/class_type": "AudioAdjustVolume",
     "/13/inputs/volume": -6,
-    "/8/class_type": "PreviewAudio",
-    "/10/inputs/seconds_total": 20.0,
-    "/5/inputs/seconds": 20.05,
-    "/11/inputs/duration": 19.25
+    "/8/class_type": "PreviewAudio"
    },
    "required_classes": [
     "AudioAdjustVolume",
@@ -238,7 +244,7 @@
    "name": "t5-base.safetensors"
   }
  ],
- "source": "Settings from listening tests of the authors' Foundation-1 examples (250-step variants, ConditioningZeroOut negative) for loops: 250 steps, CFG 7, dpmpp_3m_sde/exponential, length = bars*4*60/BPM (trim exact, latent +0.05 s); keybed = the authors' Foundation-1.2-Keybeds settings (80 steps, CFG 6, the author's sequence prompt, trim 19.25 s); AudioAdjustVolume -6 dB before the output; PreviewAudio = temp only. Foundation-1.2-Keybeds sounds one octave below the note name (pitch tracking with pyin: C4..F4 requested sound C3..F3, -1199 cents per note; the authors' own example the same; a synthetic control through the same code measures +1 cent), so the target writes every keybed note +12 semitones into the prompt (C4 -> C5, KEYBED_OCTAVE_OFFSET in music_gen/targets.py)",
+ "source": "Settings from listening tests of the authors' Foundation-1 examples (250-step variants, ConditioningZeroOut negative) for loops: 250 steps, CFG 7, dpmpp_3m_sde/exponential, length = bars*4*60/BPM (trim exact, latent +0.05 s); keybed = the authors' Foundation-1.2-Keybeds settings (80 steps, CFG 6, the author's sequence prompt; length from the notes chosen: 3.0 s per note + 0.25 s gap = 19.25 s for the author's six-note chunk, conditioning = whole seconds up, latent +0.05 s; the label Chromatic Chunk only for six consecutive semitones, otherwise the plain Note Sequence); AudioAdjustVolume -6 dB before the output; PreviewAudio = temp only. Foundation-1.2-Keybeds sounds one octave below the note name (pitch tracking with pyin: C4..F4 requested sound C3..F3, -1199 cents per note; the authors' own example the same; a synthetic control through the same code measures +1 cent), so the target writes every keybed note +12 semitones into the prompt (C4 -> C5, KEYBED_OCTAVE_OFFSET in music_gen/targets.py)",
  "policy": {
   "graph_mutation": "declared_pointers_only",
   "custom_node_install": "never",

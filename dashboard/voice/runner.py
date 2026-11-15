@@ -107,8 +107,19 @@ def match_gains(loudness: Mapping[str, float | None], target_lufs: float | None 
 
 
 # Lane w27-rows item 6 (VOICE-1): the reason a free-text OmniVoice voice description gets, naming what it accepts.
-DESCRIPTION_WORDS_REASON = ("Voice description not understood: the voice model takes only gender, age, pitch and accent "
-                            "words (e.g. female, young adult, low pitch, british accent).")
+# w41-audio F26: the full closed vocabulary of upstream omnivoice 0.2.1 utils/voice_design.py (style and dialects too).
+DESCRIPTION_WORDS_REASON = ("Voice description not understood: the voice model takes only these words, comma separated: "
+                            "gender (male, female), age (child, teenager, young adult, middle-aged, elderly), "
+                            "pitch (very low pitch, low pitch, moderate pitch, high pitch, very high pitch), style (whisper), "
+                            "English accent (american, australian, british, canadian, chinese, indian, japanese, korean, "
+                            "portuguese, russian accent) or Chinese dialect (\u6cb3\u5357\u8bdd, \u9655\u897f\u8bdd, \u56db\u5ddd\u8bdd, "
+                            "\u8d35\u5dde\u8bdd, \u4e91\u5357\u8bdd, \u6842\u6797\u8bdd, \u6d4e\u5357\u8bdd, \u77f3\u5bb6\u5e84\u8bdd, "
+                            "\u7518\u8083\u8bdd, \u5b81\u590f\u8bdd, \u9752\u5c9b\u8bdd, \u4e1c\u5317\u8bdd), "
+                            "e.g. female, young adult, low pitch, british accent.")
+# The Jobs row's cause holds at most 300 characters (job_causes_1._JOB_CAUSE_MAX_CHARS): every category, fewer examples.
+DESCRIPTION_WORDS_SHORT = ("Voice description not understood: the voice model takes only gender, age, pitch, style (whisper), "
+                           "English accent or Chinese dialect words, comma separated (e.g. female, young adult, low pitch, "
+                           "british accent); the take names every word.")
 
 
 def run_take(

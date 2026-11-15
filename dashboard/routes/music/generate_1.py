@@ -85,7 +85,7 @@ def _music_gen_error(exc: BaseException) -> JSONResponse:
 
 
 def _music_gen_state_dir() -> Path:
-    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    base = _local_data.records_base()
     return Path(state_root(Path(base) / "hermes")) / "music-gen"
 
 
@@ -264,11 +264,14 @@ def _music_gen_generate(request: MusicGenGenerateRequest) -> dict[str, Any]:
         rows[take_id] = {"target_id": manifest["id"], "values": take_values, "stages": stages, "seed": seed, "by": by,
                          "state": "waiting", "stage": None, "notes": values.get("notes") or None, "facts": {}, "recipe": None,
                          "error": None, "code": None, "studio_job_id": None, "created_at": now,
+                         # w41-audio F9: facts about values the model was not trained on, carried by the take.
+                         "warnings": _music_gen_targets.take_warnings(target, stages[-1], take_values),
                          "expected_seconds": _music_gen_targets.expected_seconds(target, stages[-1], take_values)
                          if manifest["engine"] != "yue2" else None}
         planned.append({"take_id": take_id, "seed": seed, "state": "waiting"})
 
-    answer = {"target_id": manifest["id"], "stages": stages, "takes": planned, "by": by}
+    answer = {"target_id": manifest["id"], "stages": stages, "takes": planned, "by": by,
+              "warnings": rows[planned[0]["take_id"]]["warnings"] if planned else []}
     raced: dict[str, Any] = {}
 
     def add(body: dict[str, Any]) -> None:
@@ -446,7 +449,8 @@ def _music_gen_takes(request: MusicGenTakesRequest) -> dict[str, Any]:
                     "length_exact": facts.get("length_exact"), "peak": facts.get("peak"), "clipped_samples": facts.get("clipped_samples"),
                     "loudness": facts.get("loudness") or {}, "sample_rate": facts.get("sample_rate"), "channels": facts.get("channels"),
                     "file": facts.get("file"), "took_seconds": facts.get("took_seconds"), "recipe": take.get("recipe"),
-                    "studio_job_id": take.get("studio_job_id"), "error": error, "code": code, "created_at": take.get("created_at")})
+                    "studio_job_id": take.get("studio_job_id"), "error": error, "code": code, "created_at": take.get("created_at"),
+                    "warnings": take.get("warnings") or []})
     if wanted is not None and len(out) != len(wanted):
         raise _MusicGenError("take_unknown", "That take is not in this project")
     out.sort(key=lambda item: item["created_at"] or 0)

@@ -12,7 +12,7 @@
   "package": "comfyui_workflow_templates_json 0.1.112",
   "license": "MIT",
   "license_file": "COMFYUI-WORKFLOW-TEMPLATES-LICENSE.txt",
-  "note": "Official FLUX.3 Klein distilled edit template flattened to API form. Kept: files, ReferenceMultiLatent, ConditioningZeroOut, sampler 16 steps cfg 1 euler/simple, the edit prompt upsampler system text. Changed: upsampler int8_convrot instead of w4a8 (the installed file), upsampler seed fixed 0 (top_k 1), the switch reads true = upsampler on, reference resolution 'keep resolution' (the Suite already sizes the crop), SaveImage -> PreviewImage (temp). Dropped: notes, ImageCompare, bounding-box layout prompt, EmptyFlux2LatentImage (unused)."
+  "note": "Official FLUX.3 Klein distilled edit template flattened to API form. Kept: files, ReferenceMultiLatent, ConditioningZeroOut, sampler 16 steps cfg 1 euler/simple, the edit prompt upsampler system text. Changed: upsampler int8_convrot instead of w4a8 (the installed file), upsampler seed fixed 0 (top_k 1), the switch reads true = upsampler on, reference resolution 'keep resolution' (the Suite already sizes the crop), SaveImage -> PreviewImage (temp). Dropped: notes, ImageCompare, bounding-box layout prompt, EmptyFlux2LatentImage (unused). w41 img-b F7: node 48's upsampler text is the template's text unescaped by one level (the template stores literal \\n and \\\" sequences): real paragraph breaks and quotes; the one literal \\n that the text means (line breaks inside quoted on-image text) stays."
  },
  "mutable_json_pointers": {
   "image": "/11/inputs/image",
@@ -61,7 +61,7 @@
  },
  "measured": "Measured 18 Oct 2026 on an RTX 5090 against Qwen-Image 2.1 Edit on the same pictures and masks: Qwen-Image 2.1 Edit was better in every operation; Klein is offered as a choice.",
  "workflow": {
-  "api_sha256": "a85e210bf111c875898c82a52420255e5e09204544c540607e0f320485855084",
+  "api_sha256": "67d4d505fb9ebf37c886ebe851dc6f55c080a7cf4f7b512f30810fe57e66e9b9",
   "node_count": 16
  }
 }

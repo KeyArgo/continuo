@@ -15,8 +15,14 @@ from __future__ import annotations
 import base64
 import io
 import json
+import os
 import sys
 import time
+
+# macOS (PR #2 by @ShawnCRMer): an op Metal (MPS) lacks runs on the CPU instead of failing the job. Set before torch
+# is imported (inside main); only on macOS, so Windows and Linux runs see no new variable.
+if sys.platform == "darwin":
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 REQUEST_SCHEMA = "studio.inpaint-runner-request/1"
 RESULT_SCHEMA = "studio.inpaint-runner-result/1"
@@ -35,7 +41,13 @@ def main() -> int:
         mask = Image.open(io.BytesIO(base64.b64decode(request["mask_png_b64"]))).convert("L")
         if image.size != mask.size:
             raise ValueError("image and mask differ in size")
-        device = "cuda" if request.get("device") == "cuda" and torch.cuda.is_available() else "cpu"
+        wanted = request.get("device")
+        if wanted == "cuda" and torch.cuda.is_available():
+            device = "cuda"
+        elif wanted == "mps" and getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+            device = "mps"
+        else:
+            device = "cpu"
         width, height = image.size
         pad_w, pad_h = (-width) % 8, (-height) % 8  # big-lama needs sides divisible by 8
         img = np.asarray(image, dtype=np.float32) / 255.0

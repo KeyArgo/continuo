@@ -56,7 +56,7 @@ class AudioStemsToMediaRequest(AudioStemsRequest):
 
 
 def _audio_stems_dir(digest: str, split: str) -> Path:
-    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    base = _local_data.records_base()
     return Path(state_root(Path(base) / "hermes")) / "stems" / digest / split
 
 

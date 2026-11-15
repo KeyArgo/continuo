@@ -173,6 +173,13 @@ async def image_workflow_submit(request: ImageWorkflowSubmitRequest) -> Any:
             policy = {"mode": "current", "owner_token": claim["owner_token"], "expected_revision": claim["expected_revision"]}
         intent = {"schema": request.schema_, "target_id": request.target_id, "prompt": request.prompt, "controls": request.controls,
                   **({"loras": loras} if loras else {})}
+        # w41 img-b F12: megapixels beyond the model's side limit for this format are lowered before the snapshot, so the
+        # stored request is what ran; earlier jobs keep their bytes (the cap is never applied when a snapshot is re-read).
+        adapter_size = getattr(workflow.compiler(request.target_id), "output_size", None)
+        if adapter_size is not None:
+            intent["controls"] = _image_workflow_run_module().capped_controls(
+                request.target_id, request.controls,
+                lambda mp: adapter_size({"target_id": request.target_id, "controls": {**request.controls, "megapixels": mp}}, []))
         snapshot = workflow.build_snapshot(intent, refs, basis, policy)
         if previous and snapshot != previous["request_snapshot"]:
             return _edit_error(409, "idempotency_conflict", "This operation already has another request")
@@ -227,6 +234,10 @@ async def image_workflow_submit(request: ImageWorkflowSubmitRequest) -> Any:
         _image_job_title_write([m[2]["image_producer_job_id"] for m in members], request.title)  # w35-ui-3 #11
         shot_id = _image_job_shot(job["image_producer_job_id"])
         _announce_image_jobs([(m[2]["image_producer_job_id"], None, m[2].get("state")) for m in members], request.owner_scope)
+        # w41-qwen2: a fact about how the run goes (the area-edit route's "warnings" form), e.g. the Qwen rewriter ran
+        # without its system prompt because that file is absent here; the key is absent when there is none.
+        facts = getattr(workflow.compiler(request.target_id), "warnings", None)
+        warnings = facts(snapshot["effective_input"]["workflow"]) if callable(facts) else []
         return {"schema": "studio.image-producer-operation/1", "kind": "image_producer_submit_result",
                 **({"run": {"batch_size": batch, "jobs": [{"image_producer_job_id": m[2]["image_producer_job_id"], "batch_index": m[0],
                                                            "seed": m[1], "state": m[2]["state"]} for m in members]}} if batch > 1 else {}),
@@ -238,6 +249,7 @@ async def image_workflow_submit(request: ImageWorkflowSubmitRequest) -> Any:
                 "request_contract": request.schema_, "sent_prompt": job.get("sent_prompt"), "render_spec": _job_render_spec(job),
                 "title": _image_human_title(job),
                 **({"shot_id": shot_id} if shot_id else {}),
+                **({"warnings": warnings} if warnings else {}),
                 **({"quarantine_reason": job["quarantine_reason"]} if job.get("quarantine_reason") else {})}
     except (ValueError, KeyError, TypeError) as exc:
         # w31-fix4 item 3 (IMG-223): a refusal names its field and why (Ideogram 4: "prompt must be a JSON object"),

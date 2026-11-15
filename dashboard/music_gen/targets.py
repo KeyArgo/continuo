@@ -46,6 +46,10 @@ _NOTE = re.compile(r"^[A-G](#|b)?[0-8]$")
 # the same code +1 cent).  The target writes every keybed note this many octaves higher, so "C4" sounds as C4 (261.6 Hz).
 KEYBED_OCTAVE_OFFSET = 1
 KEYS = tuple(f"{root} {mode}" for mode in ("major", "minor") for root in ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"))
+# w41-audio F9: what Foundation-1 was trained on (RC-stable-audio-tools gradio.py: BPM list 100-150; training_dataset_info.md:
+# ~20 s samples).  Facts on the controls and warnings on the take, never a clamp: the BPM control keeps 40-200.
+FOUNDATION1_TRAINED_BPM = (100, 150)
+FOUNDATION1_TRAINED_SECONDS = 20.0
 
 
 class MusicTargetError(ValueError):
@@ -181,10 +185,21 @@ def load_target(target_id: str, root: Path | None = None) -> dict[str, Any]:
 
 def public_target(manifest: Mapping[str, Any]) -> dict[str, Any]:
     """What the page and the agent see: no pointers, files or graphs."""
+    controls = copy.deepcopy(manifest["controls"])
+    if manifest["engine"] == "foundation1":  # w41-audio F9: the trained range as a fact beside the free control
+        for control in controls:
+            if control["id"] == "bpm":
+                control["trained_min"], control["trained_max"] = FOUNDATION1_TRAINED_BPM
+            elif control["id"] == "bars":
+                control["trained_seconds"] = FOUNDATION1_TRAINED_SECONDS
+    if manifest["engine"] == "sa3":  # w41-audio F18: the key is a word in the prompt; the model does not always follow it
+        for control in controls:
+            if control["id"] == "key":
+                control["hint"] = "A hint in the prompt: the model does not always follow the key"
     return {
         "id": manifest["id"], "label": manifest["label"], "engine": manifest["engine"], "engine_label": manifest["engine_label"],
         "stages": [{"id": gid, "label": entry["label"], "output": entry["output"]["kind"]} for gid, entry in manifest["graphs"].items()],
-        "controls": copy.deepcopy(manifest["controls"]), "headroom_db": HEADROOM_DB, "media_label": manifest["engine_label"],
+        "controls": controls, "headroom_db": HEADROOM_DB, "media_label": manifest["engine_label"],
     }
 
 
@@ -243,6 +258,35 @@ def _bar_seconds(bars: int, bpm: int) -> float:
     return round(bars * 4 * 60.0 / bpm, 6)
 
 
+# w41-audio F10: the author's keybed chunk (RC-stable-audio-tools keybed_tab.py) is 3.0 s per note with 0.25 s between
+# notes, six consecutive semitones per chunk ("Chromatic Chunk"); 6 notes = 19.25 s, the length the pin always used.
+KEYBED_NOTE_SECONDS = 3.0
+KEYBED_GAP_SECONDS = 0.25
+_PITCH = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
+
+
+def keybed_notes(text: str) -> list[str]:
+    notes = str(text or "").replace(",", " ").split()
+    if not notes or len(notes) > 16 or not all(_NOTE.fullmatch(n) for n in notes):
+        _fail("notes_invalid", "Notes must be 1 to 16 names like C4 or F#3")
+    return notes
+
+
+def _midi(note: str) -> int:
+    shift = {"#": 1, "b": -1}.get(note[1], 0) if len(note) == 3 else 0
+    return 12 * (int(note[-1]) + 1) + _PITCH[note[0]] + shift
+
+
+def keybed_is_chromatic_chunk(notes: list[str]) -> bool:
+    """Six consecutive rising semitones: the only input the author's keybed calls a Chromatic Chunk."""
+    pitches = [_midi(n) for n in notes]
+    return len(pitches) == 6 and all(b - a == 1 for a, b in zip(pitches, pitches[1:]))
+
+
+def keybed_seconds(count: int) -> float:
+    return round(count * KEYBED_NOTE_SECONDS + (count - 1) * KEYBED_GAP_SECONDS, 6)
+
+
 def expected_seconds(target: Mapping[str, Any], graph_id: str, values: Mapping[str, Any]) -> float | None:
     """The exact length the stored file must have, or None when the model decides (YuE2)."""
     manifest = target["manifest"]
@@ -253,7 +297,7 @@ def expected_seconds(target: Mapping[str, Any], graph_id: str, values: Mapping[s
         return float(resolved["length"])
     if manifest["engine"] == "foundation1":
         if graph_id == "keybed":
-            return float(target["graphs"]["keybed"]["11"]["inputs"]["duration"])
+            return keybed_seconds(len(keybed_notes(resolved["notes"])))
         return _bar_seconds(int(resolved["bars"]), resolved["bpm"])
     return None
 
@@ -273,11 +317,15 @@ def _slots(manifest: Mapping[str, Any], graph_id: str, v: Mapping[str, Any]) -> 
         sentence = v["prompt"].rstrip(" .")
         if not sentence:
             _fail("text_required", "Prompt is empty")
-        body = _join("TrackType: Music, VocalType: Instrumental", sentence, v["key"])
+        # w41-audio F18: Instrument = the official stem/solo prefix; Music (default) = the recommended full-mix prefix.
+        prefix = "TrackType: Instrument" if v.get("track_type") == "Instrument" else "TrackType: Music, VocalType: Instrumental"
+        body = _join(prefix, sentence, v["key"])
         return {"text": f"{body}. BPM: {v['bpm']}.", "seconds": float(v["length"]), "seed": v["seed"]}
     if engine == "yue2":
-        if not v["prompt"] or not v["lyrics"]:
-            _fail("text_required", "Style and lyrics are needed")
+        # w41-audio F20: a style is required; empty lyrics are the official instrumental recipe (YuE2 docs/generation.md:
+        # empty lyrics + the melody in the Ins voice of the score); the graphs take an empty lyrics string as it is.
+        if not v["prompt"]:
+            _fail("text_required", "Style is needed")
         slots = {"style": v["prompt"], "lyrics": v["lyrics"], "seed": v["seed"]}
         if graph_id == "song":
             if not v["notes"]:
@@ -291,16 +339,46 @@ def _slots(manifest: Mapping[str, Any], graph_id: str, v: Mapping[str, Any]) -> 
     # foundation1
     if not v["instrument"]:
         _fail("text_required", "Instrument is empty")
+    # w41-audio F9: the author's amend_prompt / keybed grammar write FX words only on Wet; on Dry they are left out.
+    fx = v["fx"] if v["wet"] != "Dry" else ""
     if graph_id == "keybed":
-        notes = v["notes"].replace(",", " ").split()
-        if not notes or len(notes) > 16 or not all(_NOTE.fullmatch(n) for n in notes):
-            _fail("notes_invalid", "Notes must be 1 to 16 names like C4 or F#3")
-        text = _join("Keybed, Sequence, Timbre Profile", v["instrument"], v["timbre"], v["wet"], v["fx"],
-                     "Chromatic Chunk, Note Sequence", ", ".join(keybed_prompt_note(n) for n in notes))
-        return {"text": text, "seed": v["seed"]}
+        notes = keybed_notes(v["notes"])
+        # w41-audio F10: the label and the length follow the notes chosen; "Chromatic Chunk" only for the author's chunk.
+        label = "Chromatic Chunk, Note Sequence" if keybed_is_chromatic_chunk(notes) else "Note Sequence"
+        text = _join("Keybed, Sequence, Timbre Profile", v["instrument"], v["timbre"], v["wet"], fx,
+                     label, ", ".join(keybed_prompt_note(n) for n in notes))
+        seconds = keybed_seconds(len(notes))
+        total = float(math.ceil(seconds))
+        return {"text": text, "seed": v["seed"], "seconds_total": total, "trim": seconds, "latent_seconds": round(total + 0.05, 6)}
     seconds = _bar_seconds(int(v["bars"]), v["bpm"])
-    text = _join(v["instrument"], v["timbre"], v["wet"], v["fx"], v["key"], f"{v['bars']} Bars", f"{v['bpm']} BPM")
+    text = _join(v["instrument"], v["timbre"], v["wet"], fx, v["key"], f"{v['bars']} Bars", f"{v['bpm']} BPM")
     return {"text": text, "seed": v["seed"], "seconds_total": seconds, "trim": seconds, "latent_seconds": round(seconds + 0.05, 6)}
+
+
+def take_warnings(target: Mapping[str, Any], graph_id: str, values: Mapping[str, Any]) -> list[dict[str, str]]:
+    """Facts the take carries about values its model was not trained on ({code, message}); nothing is refused."""
+    manifest = target["manifest"]
+    v = resolve_values(manifest, values)
+    out: list[dict[str, str]] = []
+    if manifest["engine"] == "yue2" and not v["lyrics"]:
+        out.append({"code": "instrumental", "message": "No lyrics: instrumental. Voices can still appear while the notes hold a Vocal line"})
+    if manifest["engine"] != "foundation1":
+        return out
+    if v["wet"] == "Dry" and v["fx"].strip(" ,"):
+        out.append({"code": "fx_left_out", "message": f"Dry: the FX words ({v['fx'][:60]}) were left out, as the model's author does"})
+    if graph_id == "keybed":
+        notes = keybed_notes(v["notes"])
+        if not keybed_is_chromatic_chunk(notes):
+            out.append({"code": "keybed_untrained", "message": f"{len(notes)} notes, not six rising semitones: the model was trained on chromatic six-note chunks"})
+    if graph_id == "loop":
+        low, high = FOUNDATION1_TRAINED_BPM
+        if not low <= v["bpm"] <= high:
+            out.append({"code": "bpm_untrained", "message": f"{v['bpm']} BPM is outside the trained {low}-{high} BPM; the loop may lose its grid"})
+        seconds = _bar_seconds(int(v["bars"]), v["bpm"])
+        if seconds > FOUNDATION1_TRAINED_SECONDS + 1e-6:
+            out.append({"code": "length_untrained", "message": f"{v['bars']} bars at {v['bpm']} BPM last {math.floor(seconds * 10) / 10:.1f} s, "
+                                                               f"longer than the trained {FOUNDATION1_TRAINED_SECONDS:.0f} s"})
+    return out
 
 
 def compile_graph(target: Mapping[str, Any], graph_id: str, values: Mapping[str, Any]) -> dict[str, Any]:
@@ -372,4 +450,4 @@ def health(manifest: Mapping[str, Any], object_info: Mapping[str, Any] | None, m
 
 
 __all__ = ["HEADROOM_DB", "KEYBED_OCTAVE_OFFSET", "KEYS", "keybed_prompt_note", "MusicTargetError", "SCHEMA", "TARGET_IDS", "compile_graph", "expected_seconds", "health",
-           "load_target", "public_target", "read_pointer", "recipe", "resolve_values", "stage_plan", "validate", "write_pointer"]
+           "load_target", "public_target", "read_pointer", "recipe", "resolve_values", "stage_plan", "take_warnings", "validate", "write_pointer"]

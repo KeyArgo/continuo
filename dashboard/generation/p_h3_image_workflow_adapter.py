@@ -117,10 +117,17 @@ def sigmas_for_steps(steps: int) -> str:
 
 
 
-def role_suffix(refs: list[Mapping[str, Any]]) -> str:
-    """The visible line naming each reference's role (Picture 1 is the edited picture)."""
+def role_suffix(refs: list[Mapping[str, Any]], prompt: str = "") -> str:
+    """The visible line naming each reference's role (Picture 1 is the edited picture).
+
+    w41-img-a F5: Pruna's prompt validator takes an instruct edit only as ONE paragraph, so the suffix joins it with
+    one space. A six-section brief (it opens with ``subject_definitions:``) keeps the suffix after its last section.
+    """
     lines = [f"<Picture {index + 1}> is the {ref['role']} reference." for index, ref in enumerate(refs) if index > 0]
-    return ("\n\n" + " ".join(lines)) if lines else ""
+    if not lines:
+        return ""
+    joiner = "\n\n" if prompt.lstrip().startswith("subject_definitions:") else " "
+    return joiner + " ".join(lines)
 
 
 class PH3ImageWorkflowAdapter(_create().CatalogCreateWorkflowAdapter):
@@ -199,7 +206,7 @@ class PH3ImageWorkflowAdapter(_create().CatalogCreateWorkflowAdapter):
                 raise WorkflowRequestError("reference node collision")
             graph[node_id] = {"class_type": "LoadImage", "inputs": {"image": ref["image"]}}
             conditioning[f"images.image_{index + 2}"] = [node_id, 0]
-        graph[manifest["prompt"]["node_id"]]["inputs"]["value"] = prompt + role_suffix(refs)
+        graph[manifest["prompt"]["node_id"]]["inputs"]["value"] = prompt + role_suffix(refs, prompt)
         return graph
 
     def memory_check(self, request: Mapping[str, Any], stats: Any) -> None:

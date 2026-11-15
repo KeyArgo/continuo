@@ -25,6 +25,11 @@ _engine_process_spec = importlib.util.spec_from_file_location(
     "film_suite_engine_process", Path(__file__).resolve().parents[1] / "engine_process" / "__init__.py")
 engine_process = importlib.util.module_from_spec(_engine_process_spec)
 _engine_process_spec.loader.exec_module(engine_process)
+# w41-mac-b item 1 (PR #2 by @ShawnCRMer): the one rule for this machine's own folders (dashboard/local_data).
+_local_data_spec = importlib.util.spec_from_file_location(
+    "film_suite_local_data", Path(__file__).resolve().parents[1] / "local_data" / "__init__.py")
+local_data = importlib.util.module_from_spec(_local_data_spec)
+_local_data_spec.loader.exec_module(local_data)
 
 import numpy as np
 
@@ -59,7 +64,7 @@ def engine_dir() -> Path:
     override = os.environ.get("FILM_SUITE_BEAT_ENGINE_DIR")
     if override:
         return Path(override)
-    base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    base = local_data.engines_base()
     return Path(base) / "hermes" / "film-suite" / "engines" / "beat-this"
 
 
@@ -109,8 +114,12 @@ def choose_device(queue: str) -> str:
     """GPU only when the artist's ComfyUI queue is empty; CPU Beat This! otherwise.
     Measured: CPU 0.70-0.89 s per minute of audio (8 threads), identical beats."""
     forced = os.environ.get("FILM_SUITE_BEAT_DEVICE")
-    if forced in {"cuda", "cpu"}:
+    if forced in {"cuda", "mps", "cpu"}:
         return forced
+    if local_data.is_macos():
+        # PR #2 by @ShawnCRMer, measured on an M4 Pro (4-minute song): MPS 1.8-3.3 s, CPU 2.1-3.6 s, identical beats;
+        # Metal's warm-up costs ~6 s on short songs and its memory is ComfyUI's. CPU; FILM_SUITE_BEAT_DEVICE=mps opts in.
+        return "cpu"
     return "cuda" if queue == "empty" else "cpu"
 
 

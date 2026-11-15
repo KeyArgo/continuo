@@ -107,10 +107,12 @@ def lora_support(target_id: str, family_id: str) -> dict[str, Any]:
 
 
 def run_descriptor(target_id: str, family_id: str) -> dict[str, Any]:
-    """The ``run`` block a catalog descriptor gains: batch bounds and LoRA support."""
+    """The ``run`` block a catalog descriptor gains: batch bounds and LoRA support (and ``size`` on a capped target)."""
+    size = size_limit(target_id)
+    extra = {"size": size} if size else {}
     if target_id in SINGLE_PICTURE:
-        return {"batch": {"min": 1, "max": 1, "seed": "none"}, "loras": lora_support(target_id, family_id)}
-    return {"batch": {"min": BATCH_MIN, "max": BATCH_MAX, "seed": "seed + index"}, "loras": lora_support(target_id, family_id)}
+        return {"batch": {"min": 1, "max": 1, "seed": "none"}, "loras": lora_support(target_id, family_id), **extra}
+    return {"batch": {"min": BATCH_MIN, "max": BATCH_MAX, "seed": "seed + index"}, "loras": lora_support(target_id, family_id), **extra}
 
 
 def normalize_loras(value: Any) -> list[dict[str, Any]]:
@@ -225,6 +227,41 @@ def member_controls(controls: Mapping[str, Any], seed_default: int, index: int) 
     return out
 
 
+# w41 img-b F12: the longest side a model makes (catalog resolution.max_px, model_catalog.v1.json ideogram4
+# "max_px": 2048; Ideogram 4 duplicates subjects on larger canvases). Megapixels above it for the chosen format are
+# capped at submit; the control stays free below the cap.
+SIDE_LIMIT_PX: dict[str, int] = {"ideogram4-create-v1": 2048}
+
+
+def size_limit(target_id: str) -> dict[str, Any] | None:
+    """The ``run.size`` block of a capped target, or None."""
+    limit = SIDE_LIMIT_PX.get(target_id)
+    return {"max_side_px": limit} if limit else None
+
+
+def capped_controls(target_id: str, controls: Any, size_of: Any) -> Any:
+    """``controls`` with megapixels lowered (0.1 steps) until no side of ``size_of(mp)`` exceeds the target's limit.
+
+    Unchanged when the target has no limit, the value already fits, or the controls are not valid (admission
+    refuses those by name later).  ``size_of(mp) -> (width, height)`` is the target's own output-size rule.
+    """
+    limit = SIDE_LIMIT_PX.get(target_id)
+    if not limit or not isinstance(controls, Mapping):
+        return controls
+    mp = controls.get("megapixels")
+    if mp is None or isinstance(mp, bool) or not isinstance(mp, (int, float)) or not math.isfinite(mp):
+        return controls
+    try:
+        if max(size_of(mp)) <= limit:
+            return controls
+        value = math.floor(round(mp * 10, 6)) / 10
+        while value > 0.1 and max(size_of(value)) > limit:
+            value = round(value - 0.1, 1)
+    except Exception:  # noqa: BLE001 - invalid controls are refused by admission with their own reason
+        return controls
+    return {**controls, "megapixels": value}
+
+
 __all__ = ["BATCH_MAX", "BATCH_MIN", "FAMILY_LABELS", "LORA_ALSO", "LORA_EVIDENCE", "LORA_MAX", "LORA_NODE_BASE", "LORA_ROOTS", "ROLES",
-           "RunError", "UNSUPPORTED", "admit_loras", "apply_loras", "check_batch", "compile_request", "lora_health",
-           "lora_support", "member_controls", "normalize_loras", "run_descriptor", "strip"]
+           "RunError", "SIDE_LIMIT_PX", "UNSUPPORTED", "admit_loras", "apply_loras", "capped_controls", "check_batch", "compile_request",
+           "lora_health", "lora_support", "member_controls", "normalize_loras", "run_descriptor", "size_limit", "strip"]

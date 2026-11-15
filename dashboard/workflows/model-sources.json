@@ -337,6 +337,34 @@
    "license": "qwen-research",
    "gated": false
   },
+  "text_encoders/qwen3.5_9b_qwen_image_2.1_pe_i2i.int8_convrot.system_prompt.txt": {
+   "name": "qwen3.5_9b_qwen_image_2.1_pe_i2i.int8_convrot.system_prompt.txt",
+   "folder": "text_encoders",
+   "bytes": 18344,
+   "sha256": "e378fea686a1431581ba4c654d332ae96adad633f144ae738ec8ce9c4fd66439",
+   "text_sha256": "f2676789fdfcc427f9f314df0d01d3f3f2526b79aaa026274b3f493387a7940b",
+   "optional": true,
+   "url": null,
+   "reason": "Qwen's official system prompt of Qwen/Qwen-Image-2.1-PE-I2I (its system_prompt.txt; the same text as QwenLM/Qwen-Image-2.1 prompt_rewrite/prompts/system_prompt_edit.txt), a model file Continuo does not ship. No download url whose content hash equals this sha256 is recorded yet. Saved next to the rewriter checkpoint under this name, byte for byte (CRLF is read as LF); absent or another text, the enhancer runs without it and without thinking.",
+   "repo": "Qwen/Qwen-Image-2.1-PE-I2I",
+   "license_source": "model card of Qwen/Qwen-Image-2.1-PE-I2I (License: Qwen Research License Agreement) and the QwenLM/Qwen-Image-2.1 repository licence",
+   "license": "qwen-research",
+   "gated": false
+  },
+  "text_encoders/qwen3.5_9b_qwen_image_2.1_pe_t2i.int8_convrot.system_prompt.txt": {
+   "name": "qwen3.5_9b_qwen_image_2.1_pe_t2i.int8_convrot.system_prompt.txt",
+   "folder": "text_encoders",
+   "bytes": 10045,
+   "sha256": "a77c9a06c59b120741141d9514b95682bb8761d02bec49ca61def7b2b3d9fb99",
+   "text_sha256": "7950572bdd4c8350b6bddd38c7af74c517d77799c8b9e2572aa6bbd5e9e7de73",
+   "optional": true,
+   "url": null,
+   "reason": "Qwen's official system prompt of Qwen/Qwen-Image-2.1-PE-T2I (its system_prompt.txt; the same text as QwenLM/Qwen-Image-2.1 prompt_rewrite/prompts/system_prompt_t2i.txt), a model file Continuo does not ship. No download url whose content hash equals this sha256 is recorded yet. Saved next to the rewriter checkpoint under this name, byte for byte (CRLF is read as LF); absent or another text, the enhancer runs without it and without thinking.",
+   "repo": "Qwen/Qwen-Image-2.1-PE-T2I",
+   "license_source": "model card of Qwen/Qwen-Image-2.1-PE-T2I (License: Qwen Research License Agreement) and the QwenLM/Qwen-Image-2.1 repository licence",
+   "license": "qwen-research",
+   "gated": false
+  },
   "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors": {
    "name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
    "folder": "text_encoders",
@@ -908,7 +936,9 @@
     "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
     "vae/qwen_image_2.1_vae_bf16.safetensors",
     "loras/p_qwen_image_2.1_8step_v0.1.safetensors",
-    "text_encoders/qwen3.5_9b_qwen_image_2.1_pe_i2i.int8_convrot.safetensors"
+    "text_encoders/qwen3.5_9b_qwen_image_2.1_pe_i2i.int8_convrot.safetensors",
+    "text_encoders/qwen3.5_9b_qwen_image_2.1_pe_t2i.int8_convrot.system_prompt.txt",
+    "text_encoders/qwen3.5_9b_qwen_image_2.1_pe_i2i.int8_convrot.system_prompt.txt"
    ]
   },
   "qwen-image-2.1-edit-pe-v3-v2": {
@@ -917,7 +947,9 @@
     "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
     "vae/qwen_image_2.1_vae_bf16.safetensors",
     "loras/p_qwen_image_2.1_8step_v0.1.safetensors",
-    "text_encoders/qwen3.5_9b_qwen_image_2.1_pe_i2i.int8_convrot.safetensors"
+    "text_encoders/qwen3.5_9b_qwen_image_2.1_pe_i2i.int8_convrot.safetensors",
+    "text_encoders/qwen3.5_9b_qwen_image_2.1_pe_t2i.int8_convrot.system_prompt.txt",
+    "text_encoders/qwen3.5_9b_qwen_image_2.1_pe_i2i.int8_convrot.system_prompt.txt"
    ]
   },
   "qwen-image-2.1-edit-pe-v3": {

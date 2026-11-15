@@ -61,6 +61,56 @@
     "api_sha256": "7fcd3357703e967f3c0d65c7e591fc0604b45c402d6854549d5a3bf981fc8525",
     "manifest_sha256": "32ae8f2ae133e51c80d30509d4d96e57b5173586d29125da3fe269abfb0706c0"
    }
+  ],
+  "anima-turbo-create-v1": [
+   {
+    "api_sha256": "ee308c511359d4ebd8c2f707a76a44de4953436845a9dbf3c75f505d0ac359b6",
+    "manifest_sha256": "af497492a81939fe90eeba38e86d4d7034784ca74ee4124d5c9f50eccf5a7235"
+   }
+  ],
+  "flux3-klein-sd-edit-v1": [
+   {
+    "api_sha256": "a85e210bf111c875898c82a52420255e5e09204544c540607e0f320485855084",
+    "manifest_sha256": "556918b29fd41c39446756691d2a8bca448a76b7baf4650fe9184d7532db74a8"
+   }
+  ],
+  "foundation1-loop-v1": [
+   {
+    "api_sha256": "bc75a4b5bfa3552bcb1d1c8ab07eaef9c5b83f7acbebf339390b3d28b0f65fc4",
+    "manifest_sha256": "a7b74aad4e4b5877183324de521b72bb23c2124ccb1d01c3a7d56ad80764d7a1"
+   },
+   {
+    "api_sha256": "ca6cd77f3a25623b6d0c913e85be235ff4f5205b3d50b0701ffaf56ac2605dbb",
+    "manifest_sha256": "a7b74aad4e4b5877183324de521b72bb23c2124ccb1d01c3a7d56ad80764d7a1"
+   }
+  ],
+  "omnivoice-clone-v1": [
+   {
+    "api_sha256": "36d4027cea89b5f068efbb30e10a04fa494afa42d641cefd88a124cd030f6b64",
+    "manifest_sha256": "9492b261a284e31d2886e891afec56331afc4da2c3d2f48c45487d1753a3380c"
+   }
+  ],
+  "omnivoice-design-v1": [
+   {
+    "api_sha256": "b85fc115459fa808f5dddc88c3f4d8b773bc74376573315c03b2728b399df49a",
+    "manifest_sha256": "75e5404621aee216b77013d045ef77278a4f630abb41643cdf667b023ad19bd1"
+   }
+  ],
+  "sa3-small-music-v1": [
+   {
+    "api_sha256": "10cc4fb1c0b5f52921354894d500a640968caa0d60336adaaf1355655d0c4e90",
+    "manifest_sha256": "22cf5bec0ad4622e74561c1bbcdb5a3a23165ecc6ced9823457548fc272aeecb"
+   }
+  ],
+  "yue2-song-v1": [
+   {
+    "api_sha256": "7fa4e2806ae9028246654df7e07993328651c396cd0716a476de6929c0184fbf",
+    "manifest_sha256": "6e661ed8141d11fa3c9217cb9c89613c197f354a9919fc7ae62a05fca47f7fa2"
+   },
+   {
+    "api_sha256": "f9047a0592c7128c13f6c8c79b1865967e39220d40949cfb0db789608356c1fc",
+    "manifest_sha256": "6e661ed8141d11fa3c9217cb9c89613c197f354a9919fc7ae62a05fca47f7fa2"
+   }
   ]
  },
  "note": "Lane w29-fix2 W29F-P0: every (manifest_sha256, api_sha256) pin a workflow target had in an earlier committed catalog. A job persisted under one of them keeps decoding (image_workflow_contract.validate_snapshot). Append only: when a pin changes, add the old pair here (tests/backend/test_w29_fix2_workflow_pins.py checks the git history). Lane w32-fix5 IMG-216b: the Image Edit contract (image_edit_contract.EDIT_TARGETS, /image/edit) reads the same file under its own target ids (capability_manifest_sha256 -> manifest_sha256, api_graph_sha256 -> api_sha256); tests/backend/test_w32_fix5_h3_edit_steps.py checks its git history.",

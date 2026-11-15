@@ -77,9 +77,15 @@ def _folder_refusal() -> dict[str, Any]:
 
 
 def _loose_work_folders() -> Any:
-    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    base = _local_data.records_base()
     return _approved_roots_module.LooseWorkFolders(
         state_root(Path(base) / "hermes") / _approved_roots_module.LOOSE_FILE_NAME)
+
+
+def _folder_grants() -> Any:
+    """Lane w41-safe (MED-102): the host's grants as the page reported them; revoked folders are read by no route."""
+    base = _local_data.records_base()
+    return _approved_roots_module.FolderGrants(state_root(Path(base) / "hermes") / _approved_roots_module.GRANTS_FILE_NAME)
 
 
 def _manifest_roots_of(reference: Any) -> list[str]:
@@ -130,11 +136,14 @@ def _request_roots_narrowed(request_roots: Any, project_ref: Any = None, *, path
                    studio_core.project_store.offline_roots(_manifest_roots_of(project_ref)) if isinstance(root, str)}
         requested = [root for root in requested
                      if not (isinstance(root, str) and root and os.path.normcase(os.path.normpath(root)) in offline)]
+    # Lane w41-safe (MED-102): a folder taken back in Hermes Settings > Plugins leaves every server list (any project,
+    # Loose work), and a path inside it is refused by name unless a root still approved holds it.
+    revoked = _folder_grants().revoked()
     try:
         kept, _dropped = _approved_roots_module.effective_roots(
             requested, project_ref, caller,
-            project_roots=_manifest_roots_of, known_project_roots=_recent_projects_roots,
-            loose=_loose_work_folders(), owned_roots=owned,
+            project_roots=lambda ref: _approved_roots_module.without_revoked(_manifest_roots_of(ref), revoked),
+            known_project_roots=_recent_projects_roots, loose=_loose_work_folders(), owned_roots=owned, revoked=revoked,
         )
     except _approved_roots_module.FolderNotApproved:
         raise _FolderNotApproved() from None
@@ -144,7 +153,12 @@ def _request_roots_narrowed(request_roots: Any, project_ref: Any = None, *, path
                                    _project_media_existing(pid, pdir))
     else:
         server = list(_loose_work_folders().read()["approved_roots"])
-    server = [root for root in dict.fromkeys(server) if isinstance(root, str) and os.path.isdir(root)]
+    server = [root for root in dict.fromkeys(_approved_roots_module.without_revoked(server, revoked))
+              if isinstance(root, str) and os.path.isdir(root)]
+    if revoked:
+        sent_paths = path if isinstance(path, (list, tuple)) else [path]
+        if any(_approved_roots_module.in_revoked(p, revoked, [*server, *owned]) for p in sent_paths if p):
+            raise _FolderNotApproved()
     if not server_list:
         # Every other route: the sent list narrowed to the server's list (p5-prj); a guard that needs a root
         # ("without approved root fails before admission") still sees an empty list.

@@ -121,6 +121,16 @@
    ]
   },
   {
+   "id": "track_type",
+   "label": "Track",
+   "kind": "choice",
+   "default": "Music",
+   "options": [
+    "Music",
+    "Instrument"
+   ]
+  },
+  {
    "id": "seed",
    "label": "Seed",
    "kind": "integer",
@@ -140,7 +150,7 @@
    "name": "t5gemma_b_b_ul2.safetensors"
   }
  ],
- "source": "The ComfyUI Stable Audio template: lcm/simple, 8 steps, CFG 1, negative empty; TrimAudioDuration to the whole-second length (the VAE answers whole 2048-sample frames: 30 s came back 30.093 s, measured 3 Nov 2026); prompt format of the authors' prompt assistant; AudioAdjustVolume -6 dB; PreviewAudio = ComfyUI temp only",
+ "source": "The ComfyUI Stable Audio template: lcm/simple, 8 steps, CFG 1, negative empty; TrimAudioDuration to the whole-second length (the VAE answers whole 2048-sample frames: 30 s came back 30.093 s, measured 3 Nov 2026); prompt format of the authors' prompt assistant; AudioAdjustVolume -6 dB; PreviewAudio = ComfyUI temp only; Track (w41-audio F18): Music = the recommended prefix 'TrackType: Music, VocalType: Instrumental' (default, unchanged); Instrument = the official stem prefix 'TrackType: Instrument' (Stable Audio 3 docs/guides/prompting.md: stems start with it) for a solo instrument",
  "policy": {
   "graph_mutation": "declared_pointers_only",
   "custom_node_install": "never",

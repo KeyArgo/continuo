@@ -35,13 +35,15 @@ page open: say so, or use the route tools (they work on the project files withou
 | Media: list, probe, marks, references, control layers, shot analysis | `continuo_media_*`, `continuo_references_read`, `continuo_reference_use`, `continuo_control_*`, `continuo_scene_*` |
 | Shots, elements and Previz: shot record (size, framing, lens, camera), characters/places/props with versions, a scene's previz set, shot cameras, figures, block a scene as an undoable proposal | `continuo_shot_plan_*`, `continuo_elements_*`, `continuo_previz_*` |
 | Jobs and the GPU line | `continuo_jobs_*`, `continuo_gpu_status` |
+| Where ComfyUI runs: read, test or set the address (this machine only) | `continuo_settings_*` |
 | Review notes and decisions | `continuo_review_*` |
 | Subtitles of the cut (ST1): read, edit lines and style (same verbs as the hand), create from audio, SRT / WebVTT | `continuo_subtitles_*` |
 
 Load a tool's schema before the first call (`tool_describe`); the description names its payload and refusals.
 
 Before writing a prompt, load the matching skill: `film-suite:video-prompts` for a video take, `film-suite:image-prompts`
-for a picture or an edit. Each model reads its own prompt format.
+for a picture or an edit, `film-suite:voice-prompts` for a spoken line or a voice description, `film-suite:music-prompts`
+for a music take. Each model reads its own prompt format.
 
 ## Image page
 
@@ -83,6 +85,13 @@ actions), a new `revision` (script, cut, marks), a `job_id` whose poll reached a
 Generation (video, image, music, voice) runs on the artist's local GPU: submit only when the artist asked for it.
 
 ## Consent
+
+The ComfyUI address is a Continuo setting (Hermes Settings › Plugins › Continuo). You may read it, test an address on
+this machine and set or clear one on this machine (`continuo_settings_test`, then `continuo_settings_write`). An address
+on another machine is refused for you: that machine would receive the artist's prompts and pictures, so the artist sets
+it on the settings page. The ComfyUI folder and the models folder (`comfy_root`, `comfy_models`) are settings there too:
+you may read them (`continuo_settings_read`), never set or clear them, because a folder is always the artist's to
+approve.
 
 The artist picks folders, files, ratings, keeps and names. Never approve a folder, choose a file, rate or keep on the
 artist's behalf, and never claim an export was imported into another program. The one exception: when the artist asks

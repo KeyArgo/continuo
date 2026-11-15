@@ -70,6 +70,13 @@ async def models_catalog(request: ModelCatalogRequest) -> Any:
             _MODEL_CATALOG_TIMEOUT_SECONDS,
         )
         return {**out, "engine": engine} if engine is not None else out
+    except ValueError as exc:
+        if getattr(exc, "comfy_folder_setting", False):  # w41-folders: a saved folder that cannot be used, the fact
+            return JSONResponse(status_code=409, content={"error": {"code": "comfy_folder_invalid", "message": str(exc)}})
+        return JSONResponse(
+            status_code=503,
+            content={"error": {"code": "model_catalog_unavailable", "message": "Model catalog is unavailable"}},
+        )
     except Exception:  # noqa: BLE001 - finite, path-free plugin boundary
         return JSONResponse(
             status_code=503,

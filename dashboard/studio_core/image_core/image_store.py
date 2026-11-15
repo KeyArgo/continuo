@@ -33,6 +33,10 @@ except ImportError:  # pragma: no cover - direct isolated module loading
 
 IMAGE_OWNER_CLAIM_SCHEMA = "studio.image-owner-claim/1"
 MAX_STATE_FILES = 256
+# POSIX safe deletes (path_boundary._posix_unlink_exact) leave two private tombstones in the state directory per
+# removed stage: the quarantined stage and the moved placeholder.  They are counted apart from the state files
+# (lane w41-mac-a, PR #2 by @ShawnCRMer), so a long history is not refused for its own residue.
+MAX_INTERNAL_RESIDUES = 2 * MAX_STATE_FILES
 MAX_STATE_BYTES = 4 * 1024 * 1024
 MAX_CONTEXTS = 256
 MAX_FENCED_RESULT_BYTES = max(MAX_STATE_BYTES, int(getattr(contract, "MAX_BYTES", MAX_STATE_BYTES)))
@@ -44,6 +48,14 @@ _OPERATION_RE = re.compile(r"^imgop_[0-9a-f]{32}$")
 _ENROLLMENT_RE = re.compile(r"^imgkey_[0-9a-f]{32}$")
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 _STATE_FILE_RE = re.compile(r"^r([0-9]{20})-(imgop_[0-9a-f]{32})\.json$")
+# The POSIX tombstone names of path_boundary, read from the one module that names them (loaded by path, as
+# film_binding_store does).  Windows deletes by handle and leaves none, so there such a name is still an unknown child.
+_migration_spec = importlib.util.spec_from_file_location(
+    "film_suite_owner_migration", Path(__file__).resolve().parents[2] / "generation" / "legacy_plugin_migration.py"
+)
+_migration_module = importlib.util.module_from_spec(_migration_spec)
+_migration_spec.loader.exec_module(_migration_module)
+_TOMBSTONE_RE = re.compile(_migration_module.TOMBSTONE_PATTERN)
 _CLAIM_FIELDS = frozenset(
     {
         "schema",
@@ -441,6 +453,11 @@ class ImageStateStore:
             raise ImageStateError("state-reparse-object")
         return handle, identity
 
+    @staticmethod
+    def _state_directory_bound() -> int:
+        """Entries one state directory may hold: its revisions, and on POSIX their safe-delete tombstones."""
+        return MAX_STATE_FILES if os.name == "nt" else MAX_STATE_FILES + MAX_INTERNAL_RESIDUES
+
     def _load_records_from_pinned_state(
         self,
         context_id: str,
@@ -451,13 +468,23 @@ class ImageStateStore:
         entries = self._enumerate_child_entries(
             state_handle,
             state_path,
-            max_entries=MAX_STATE_FILES,
+            max_entries=self._state_directory_bound(),
             error_code="state-enumeration-failed",
         )
         records: list[tuple[str, dict[str, Any], bytes]] = []
         seen_revisions: set[int] = set()
         total_bytes = 0
+        state_files = 0
+        residues = 0
         for name, enumerated_identity in entries:
+            if os.name != "nt" and _TOMBSTONE_RE.fullmatch(name) is not None:
+                residues += 1
+                if residues > MAX_INTERNAL_RESIDUES:
+                    raise ImageStateError("state-internal-residue-count-exceeded")
+                continue
+            state_files += 1
+            if state_files > MAX_STATE_FILES:
+                raise ImageStateError("state-file-count-exceeded")
             match = _STATE_FILE_RE.fullmatch(name)
             if match is None:
                 raise ImageStateError("state-unknown-child")
@@ -508,7 +535,7 @@ class ImageStateStore:
         final_entries = self._enumerate_child_entries(
             state_handle,
             state_path,
-            max_entries=MAX_STATE_FILES,
+            max_entries=self._state_directory_bound(),
             error_code="state-enumeration-failed",
         )
         if not self._same_enumerated_entries(entries, final_entries, directory=False):

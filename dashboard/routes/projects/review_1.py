@@ -24,7 +24,7 @@ def _review_module() -> Any:
 
 
 def _review_store() -> Any:
-    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    base = _local_data.records_base()
     return _review_module().ReviewStore(Path(state_root(Path(base) / "hermes")) / "review")
 
 

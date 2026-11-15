@@ -241,8 +241,19 @@ def _windows_dispose_exact(handle: Any) -> None:
     _windows_dispose_native(native)
 
 
-_RENAME_NOREPLACE = 1
-_RENAME_EXCHANGE = 2
+# The one atomic POSIX rename (Linux renameat2, macOS renameatx_np) lives in studio_core/posix_rename.py
+# (lane w41-mac-a, PR #2 by @ShawnCRMer).  This module is loaded as several synthetic packages and by tests on its
+# own, never next to studio_core as a package sibling, so the shared file is loaded by path, as path_boundary does.
+import importlib.util as _posix_rename_import
+
+_posix_rename_spec = _posix_rename_import.spec_from_file_location(
+    "film_suite_bounded_download_posix_rename",
+    Path(__file__).resolve().parents[1] / "studio_core" / "posix_rename.py",
+)
+_posix_rename = _posix_rename_import.module_from_spec(_posix_rename_spec)
+_posix_rename_spec.loader.exec_module(_posix_rename)
+_RENAME_NOREPLACE = _posix_rename.RENAME_NOREPLACE
+_RENAME_EXCHANGE = _posix_rename.RENAME_EXCHANGE
 
 
 def _posix_renameat2(parent_fd: int, source_name: str, target_name: str, flags: int) -> None:
@@ -250,27 +261,13 @@ def _posix_renameat2(parent_fd: int, source_name: str, target_name: str, flags: 
     if os.name == "nt":
         raise RuntimeError("POSIX renameat2 requested on Windows")
     try:
-        libc = ctypes.CDLL(None, use_errno=True)
-        renameat2 = libc.renameat2
-    except (AttributeError, OSError) as exc:
-        raise OSError(errno.ENOSYS, "renameat2 is unavailable") from exc
-    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-    renameat2.restype = ctypes.c_int
-    result = renameat2(
-        int(parent_fd),
-        os.fsencode(source_name),
-        int(parent_fd),
-        os.fsencode(target_name),
-        int(flags),
-    )
-    if result == 0:
-        return
-    error = ctypes.get_errno() or errno.EIO
-    if error == errno.EEXIST and flags == _RENAME_NOREPLACE:
-        raise FileExistsError(error, "rename target already exists", target_name)
-    if error in {errno.ENOSYS, errno.EINVAL, errno.EOPNOTSUPP}:
-        raise OSError(errno.ENOSYS, "requested renameat2 operation is unavailable")
-    raise OSError(error, "same-parent rename failed", source_name)
+        _posix_rename.rename_between_fds(parent_fd, source_name, parent_fd, target_name, flags)
+    except FileExistsError:
+        raise
+    except OSError as exc:
+        if exc.errno == errno.ENOSYS:
+            raise
+        raise OSError(exc.errno or errno.EIO, "same-parent rename failed", source_name) from None
 
 
 def _posix_child_stat(parent_fd: int, name: str) -> os.stat_result:

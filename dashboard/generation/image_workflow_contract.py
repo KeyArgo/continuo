@@ -18,7 +18,15 @@ def compiler(target_id):
     # The adapter registry is backend-only; controls and roles remain catalog data.
     family, entry = entries()[target_id]
     module_name = model_catalog.IMAGE_WORKFLOW_ADAPTERS[family["id"]]
-    return import_module("." + module_name, __package__).create_adapter()
+    module = import_module("." + module_name, __package__)
+    files = getattr(module, "SYSTEM_PROMPT_FILES", None)
+    if isinstance(files, dict):
+        # w41-qwen2: a rewriter's system prompts are model files on this machine (next to its checkpoint), read
+        # here where the models root is known; the adapter is loaded by file path and never searches the disk.
+        return module.create_adapter(system_prompts={
+            task: model_catalog.model_file_bytes(module.SYSTEM_PROMPT_FOLDER, name, module.SYSTEM_PROMPT_MAX_BYTES)
+            for task, name in files.items()})
+    return module.create_adapter()
 
 
 def build_snapshot(request, owned_references, basis, policy):

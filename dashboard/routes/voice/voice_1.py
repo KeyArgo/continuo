@@ -42,7 +42,7 @@ _VOICE_HEALTH_CACHE: dict[str, Any] = {}
 
 
 def _voice_state_dir() -> Path:
-    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    base = _local_data.records_base()
     return Path(state_root(Path(base) / "hermes")) / "voice"
 
 
@@ -417,9 +417,12 @@ def _voice_run_one(item: dict[str, Any]) -> None:
             on_progress=lambda job_id, value: _VOICE_PROGRESS.__setitem__(job_id, value) if value is not None else _VOICE_PROGRESS.pop(job_id, None))
         facts.update(state="ready", seconds=result["seconds"], loudness=result["loudness"], took_seconds=result["took_seconds"])
     except Exception as exc:  # noqa: BLE001 - recorded on the take
-        facts.update(state="failed", error=str(exc)[:200] or "The take failed")
+        # w41-audio F26: the take keeps the whole refusal (the description vocabulary is ~520 characters); the Jobs row
+        # gets the short form, its cause holds 300.
+        facts.update(state="failed", error=str(exc)[:600] or "The take failed")
         # Lane w27-rows item 6 (VOICE-1): the Jobs row names the same reason as the take (not "Unknown generation error").
-        _job_cause_note(record.studio_job_id, facts["error"])
+        _job_cause_note(record.studio_job_id, _voice_runner_module.DESCRIPTION_WORDS_SHORT
+                        if facts["error"] == _voice_runner_module.DESCRIPTION_WORDS_REASON else facts["error"][:200])
 
     def put(body: dict[str, Any]) -> None:
         if record.studio_job_id in body["takes"]:

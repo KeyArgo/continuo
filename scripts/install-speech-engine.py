@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import sys
 from pathlib import Path
 import tempfile
 import urllib.request
@@ -12,9 +13,19 @@ URL = 'https://raw.githubusercontent.com/snakers4/silero-vad/v6.2/src/silero_vad
 MODEL_SHA256 = '1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3'
 
 
+def _machine_local() -> str:
+    """LOCALAPPDATA, else ~/Library/Application Support on macOS, else ~/AppData/Local (dashboard/local_data
+    engines_base, inline: this script stands alone; PR #2 by @ShawnCRMer)."""
+    if os.environ.get("LOCALAPPDATA"):
+        return os.environ["LOCALAPPDATA"]
+    if sys.platform == "darwin":
+        return os.path.join(os.path.expanduser("~"), "Library", "Application Support")
+    return str(Path.home() / "AppData" / "Local")
+
+
 def default_engine_dir():
     override = os.environ.get('FILM_SUITE_SPEECH_ENGINE_DIR')
-    base = os.environ.get('LOCALAPPDATA') or str(Path.home() / 'AppData' / 'Local')
+    base = _machine_local()
     return Path(override) if override else Path(base) / 'hermes/film-suite/engines/silero-vad'
 
 

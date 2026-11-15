@@ -37,6 +37,11 @@ _engine_process_spec = importlib.util.spec_from_file_location(
     "film_suite_engine_process", Path(__file__).resolve().parents[1] / "engine_process" / "__init__.py")
 engine_process = importlib.util.module_from_spec(_engine_process_spec)
 _engine_process_spec.loader.exec_module(engine_process)
+# w41-mac-b item 1 (PR #2 by @ShawnCRMer): the one rule for this machine's own folders (dashboard/local_data).
+_local_data_spec = importlib.util.spec_from_file_location(
+    "film_suite_local_data", Path(__file__).resolve().parents[1] / "local_data" / "__init__.py")
+local_data = importlib.util.module_from_spec(_local_data_spec)
+_local_data_spec.loader.exec_module(local_data)
 
 # Lane w18-amap (AUD-135): the local recognizer (voice/asr.py, faster-whisper large-v3 on the CPU) for songs without
 # pasted lyrics; loaded by path and only when a song needs it.
@@ -100,7 +105,7 @@ def engine_dir() -> Path:
     override = os.environ.get("FILM_SUITE_SONG_ENGINE_DIR")
     if override:
         return Path(override)
-    base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    base = local_data.engines_base()
     return Path(base) / "hermes" / "film-suite" / "engines" / "song-analysis"
 
 
@@ -152,9 +157,12 @@ def gpu_memory_used_mb() -> int | None:
 
 def choose_device(queue: str) -> str:
     forced = os.environ.get("FILM_SUITE_SONG_DEVICE")
-    if forced in {"cuda", "cpu"}:
+    if forced in {"cuda", "mps", "cpu"}:
         return forced
-    return "cuda" if queue == "empty" else "cpu"
+    # macOS (PR #2 by @ShawnCRMer): Apple Silicon has no CUDA; its GPU is Metal (torch "mps"), shared with ComfyUI
+    # the same way. Elsewhere unchanged.
+    gpu = "mps" if local_data.is_macos() else "cuda"
+    return gpu if queue == "empty" else "cpu"
 
 
 def _weights(record: dict[str, Any]) -> dict[str, str]:
@@ -169,7 +177,7 @@ def _weights(record: dict[str, Any]) -> dict[str, str]:
 def run_engine(record: dict[str, Any], *, audio_path: str, beats: list[float], stems: dict[str, str | None],
                lyrics: str | None, tasks: tuple[str, ...] = TASKS, device: str | None = None) -> dict[str, Any]:
     """One runner subprocess.  Never raises: {'ok': False, 'reason', 'job'} on failure."""
-    forced = os.environ.get("FILM_SUITE_SONG_DEVICE") if os.environ.get("FILM_SUITE_SONG_DEVICE") in {"cuda", "cpu"} else None
+    forced = os.environ.get("FILM_SUITE_SONG_DEVICE") if os.environ.get("FILM_SUITE_SONG_DEVICE") in {"cuda", "mps", "cpu"} else None
     queue = comfy_queue_state() if device is None and forced is None else "not_checked"
     requested = device or forced or choose_device(queue)
     request = {"schema": REQUEST_SCHEMA, "audio_path": str(audio_path), "device": requested, "tasks": list(tasks),

@@ -4041,7 +4041,101 @@ class RecentProjectStore:
                 candidates.append(root)
         return candidates
 
+    def _copy_of_known_project(self, directory: str | Path) -> str | None:
+        """Lane w41-safe (PRJ-064): the project id this Sample film folder shares with another LIVE one, or None.
+
+        A Sample film folder copied in the file manager carries its original's project.json. When the
+        Recent list names the same id at another folder whose project.json still holds that id, this folder is a
+        copy: it opens as its own project. A moved folder (the old place gone or holding another id) is not a copy.
+        """
+        try:
+            folder = self.boundary.validate_project_directory(directory, operation="open")
+            # Only a Sample film (state/sample-landing.json, written by its build alone): a copy of the artist's own
+            # project keeps its id as p12-med / p13-prjc decided (clips relink, a pending re-base guards the original).
+            if not (folder / "state" / "sample-landing.json").is_file():
+                return None
+            raw = _loads_bounded(_read_regular(self.boundary, folder / "project.json", max_bytes=MANIFEST_MAX_BYTES))
+            project_id = raw.get("project_id") if isinstance(raw, dict) else None
+            if type(project_id) is not str or not _PROJECT_ID_RE.fullmatch(project_id):
+                return None
+            entries, _snapshot = self._read_entries()
+        except (ProjectError, OSError, ValueError, TypeError, UnicodeError):
+            return None
+        for entry in entries or ():
+            if entry.get("project_id") != project_id or not isinstance(entry.get("directory"), str):
+                continue
+            if _same_path(entry["directory"], str(folder)):
+                return None  # the Recent entry is this folder: the original itself
+            try:
+                other = self.boundary.validate_project_directory(entry["directory"], operation="open")
+                if _same_path(str(other), str(folder)):
+                    return None
+                theirs = _loads_bounded(_read_regular(self.boundary, other / "project.json", max_bytes=MANIFEST_MAX_BYTES))
+            except (ProjectError, OSError, ValueError, TypeError, UnicodeError):
+                continue  # the old place is gone: a move, re-based as before
+            if isinstance(theirs, dict) and theirs.get("project_id") == project_id:
+                return project_id
+        return None
+
+    def _reidentify_copy(self, directory: str | Path, old_id: str) -> str:
+        """Lane w41-safe (PRJ-064): give a copied project folder its own id and its folder's name.
+
+        Rewrites project.json (new id, name = folder name, revision + 1) and every JSON envelope in the folder that
+        names the old id at its top level (state/*.json, script/*.json and their kept revisions), atomically per file.
+        The original folder is never touched.
+        """
+        store = self.project_store
+        project_dir = store._directory(directory)
+        identity = self.boundary.pin_directory(project_dir)
+        new_id = "prj_" + secrets.token_hex(16)
+        with self.boundary.project_lock(project_dir):
+            self.boundary.revalidate_directory(project_dir, identity)
+            raw = _loads_bounded(_read_regular(self.boundary, project_dir / "project.json", max_bytes=MANIFEST_MAX_BYTES))
+            if not isinstance(raw, dict) or raw.get("project_id") != old_id:
+                return str(raw.get("project_id")) if isinstance(raw, dict) else old_id
+            for sub in ("state", "script"):
+                folder = project_dir / sub
+                if not folder.is_dir() or folder.is_symlink():
+                    continue
+                for path in sorted(folder.iterdir()):
+                    if not path.is_file() or path.is_symlink() or path.stat().st_size > STATE_MAX_BYTES * 8:
+                        continue
+                    try:
+                        data = path.read_bytes()
+                    except OSError:
+                        continue
+                    if old_id.encode("ascii") not in data:
+                        continue
+                    try:
+                        value = json.loads(data.decode("utf-8"))
+                    except (UnicodeError, ValueError):
+                        continue
+                    if not isinstance(value, dict) or value.get("project_id") != old_id:
+                        continue
+                    value["project_id"] = new_id
+                    payload = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+                    store._atomic_replace_file(folder, path, payload, max_bytes=max(len(payload), len(data)))
+            updated = dict(raw)
+            updated["project_id"] = new_id
+            name = project_dir.name.strip()
+            if name:
+                try:
+                    updated["name"] = _name(name)
+                except ProjectError:
+                    pass
+            if type(raw.get("revision")) is int:
+                updated["revision"] = raw["revision"] + 1
+            if isinstance(raw.get("updated_at"), str):
+                updated["updated_at"] = _next_timestamp(raw["updated_at"])
+            payload = _bounded_payload(updated, max_bytes=MANIFEST_MAX_BYTES, label="project manifest")
+            store._atomic_replace_file(project_dir, project_dir / "project.json", payload, max_bytes=MANIFEST_MAX_BYTES)
+        return new_id
+
     def open_project(self, directory: str | Path) -> dict[str, Any]:
+        # lane w41-safe (PRJ-064): a COPY of a project that is still in its own place opens as its own project.
+        copied = self._copy_of_known_project(directory)
+        if copied is not None:
+            self._reidentify_copy(directory, copied)
         # lane w11-backend M-3: a moved/copied project re-bases its own paths before it is read.
         moved_from = None
         candidates = self._moved_from_candidates(directory)

@@ -11,7 +11,7 @@ from __future__ import annotations
 # Answers never carry a path.
 
 def _timeline_speech_cache_dir() -> Path:
-    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    base = _local_data.records_base()
     return state_root(Path(base) / "hermes") / "speech"
 
 

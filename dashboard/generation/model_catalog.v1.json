@@ -67,10 +67,9 @@
               "id": "official",
               "label": "Official Turbo",
               "values": {
-                "cfg": 0.0,
-                "mu": 1.15
+                "cfg": 1.0
               },
-              "source": "Inventory 1 Krea 2 Turbo: official Turbo CFG 0, mu 1.15 (ref-krea2.md 1-3)"
+              "source": "Krea cfg 0 = ComfyUI 1.0; mu 1.15 is ComfyUI's fixed Krea 2 shift"
             }
           ],
           "lora_max": 32,
@@ -140,7 +139,16 @@
                 "steps": 52,
                 "cfg": 3.5
               },
-              "source": "Inventory 1 Krea 2 Raw: official ~52 steps, CFG 3.5 (ref-krea2.md 1)"
+              "source": "ComfyUI CFG 3.5 = Krea 2.5 (Krea's sampler uses cond + g*(cond - uncond), ComfyUI uncond + s*(cond - uncond)); the house Raw recipe, kept"
+            },
+            {
+              "id": "raw_official",
+              "label": "Raw, official",
+              "values": {
+                "steps": 52,
+                "cfg": 4.5
+              },
+              "source": "Krea 3.5 = ComfyUI 4.5: Krea 2 README Raw recipe --steps 52 --cfg 3.5 in Krea's CFG (kohya musubi-tuner docs/krea2.md: guidance_scale = guidance + 1)"
             }
           ],
           "lora_max": 32,
@@ -614,6 +622,7 @@
               "id": "removal_raw",
               "label": "Removals (Raw)",
               "values": {
+                "model": "krea2_raw_int8_convrot.safetensors",
                 "steps": 20,
                 "cfg": 3.0,
                 "ref_boost": 4.0,
@@ -961,8 +970,8 @@
           ],
           "suite_targets": [],
           "workflow": {
-            "manifest_sha256": "af497492a81939fe90eeba38e86d4d7034784ca74ee4124d5c9f50eccf5a7235",
-            "api_sha256": "ee308c511359d4ebd8c2f707a76a44de4953436845a9dbf3c75f505d0ac359b6",
+            "manifest_sha256": "7ec7fb7b8dbd52c5ed308f32299a41f596b4bd04eebe684be2623d57b1ae5f1e",
+            "api_sha256": "77ec130d7b43d228e34dd7bbb4f383fb6f456c66837f42d06a5319c021d8ae79",
             "descriptor": {
               "descriptor_version": 1,
               "target_id": "anima-turbo-create-v1",
@@ -1477,7 +1486,7 @@
           "stages": [],
           "notes": [
             "No native image-to-image; prompt is JSON only.",
-            "Per-step guidance schedule (45x7 + 3x3) is not expressed."
+            "Approximated by CFGOverride from 70 %: 3 low-CFG steps at 20, 7 at 48 (official 2 and 3)."
           ],
           "suite_targets": [],
           "workflow": {
@@ -2000,7 +2009,7 @@
           },
           "stages": [],
           "notes": [
-            "Prompt enhancer is on by default in the artist workflow; its prompt is shown and stored."
+            "Prompt enhancer is off by default; opt in per job; never for Relight."
           ],
           "suite_targets": [],
           "workflow": {
@@ -2934,7 +2943,7 @@
           "stages": [],
           "notes": [
             "bf16 and int8 model files are both offered; the artist compares them.",
-            "Official negative prompt is prefilled and editable."
+            "Defect tags from the MOSS user guide are prefilled (the SFT card's default is empty)."
           ],
           "suite_targets": [],
           "workflow": {
@@ -3394,7 +3403,7 @@
               "role": "voice",
               "min": 0,
               "max": 1,
-              "notes": "A clip of the voice (3-10 s best; over 20 s the pack trims to 15 s) and, optionally, its words; empty words = local Whisper."
+              "notes": "A clip of the voice (3-10 s best; over 20 s the pack trims to 15 s when no words are given; with words the whole clip is used (slower, worse)) and, optionally, its words; empty words = local Whisper."
             }
           ],
           "files": {
@@ -3496,7 +3505,7 @@
           "presets": [
             {
               "id": "space",
-              "label": "Fish Audio defaults",
+              "label": "Space defaults (node)",
               "values": {
                 "temperature": 1.0,
                 "top_p": 0.9,

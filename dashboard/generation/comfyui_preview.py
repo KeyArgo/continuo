@@ -205,7 +205,8 @@ class PreviewHub:
         clock: Callable[[], float] = time.monotonic,
         backoff: tuple[float, ...] = BACKOFF_SECONDS,
     ) -> None:
-        self.url = url if url is not None else _endpoint.comfy_ws_url(PREVIEW_CLIENT_ID)
+        self._url = url  # None = the configured address, read at every connect (lane w41-settings item 1)
+        self._opened_url: str | None = None
         self._connect = connect
         self._clock = clock
         self._backoff = backoff
@@ -221,16 +222,27 @@ class PreviewHub:
         self.available = True
         self.connects = 0
 
+    @property
+    def url(self) -> str:
+        return self._url if self._url is not None else _endpoint.comfy_ws_url(PREVIEW_CLIENT_ID)
+
     # -- lifecycle ---------------------------------------------------------
     def ensure_started(self) -> None:
-        """Start the single reader on the running loop; never blocks."""
+        """Start the single reader on the running loop; never blocks. A reader still on an address that is no
+        longer the configured one is replaced (lane w41-settings item 1: a saved address reaches the preview)."""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
         task = self._task
         if task is not None and not task.done() and task.get_loop() is loop:
-            return
+            try:
+                current = self.url
+            except ValueError:  # an invalid address: the reader stays as it is; requests state the fact
+                return
+            if self._opened_url is None or self._opened_url == current:
+                return
+            task.cancel()
         self.connected = False
         self._task = loop.create_task(self._run(), name="filmsuite-comfyui-preview")
 
@@ -244,11 +256,13 @@ class PreviewHub:
                 pass
 
     def _open(self) -> Any:
+        url = self.url
+        self._opened_url = url
         if self._connect is not None:
-            return self._connect(self.url)
+            return self._connect(url)
         from websockets.asyncio.client import connect  # type: ignore[import-not-found]
 
-        return connect(self.url, max_size=MAX_FRAME_BYTES + 65_536, open_timeout=3, proxy=None,
+        return connect(url, max_size=MAX_FRAME_BYTES + 65_536, open_timeout=3, proxy=None,
                        ping_interval=20, ping_timeout=20, compression=None)
 
     async def _run(self) -> None:
@@ -259,7 +273,11 @@ class PreviewHub:
             except ImportError:
                 self.available = False
                 return
+            except ValueError:  # an invalid configured address: no connection, asked again after the backoff
+                opener = None
             try:
+                if opener is None:
+                    raise ConnectionError("no valid ComfyUI address")
                 async with opener as socket:
                     self.connected = True
                     self.connects += 1

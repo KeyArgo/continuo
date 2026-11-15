@@ -95,7 +95,12 @@ class ComfyUIClient:
         resolved = comfy_origin()
         if origin is not None and origin != resolved:
             raise ValueError(f"ComfyUI origin must be the configured address {resolved}")
-        self.origin = resolved
+
+    @property
+    def origin(self) -> str:
+        """The configured address at THIS request (lane w41-settings item 1): a client kept for the process (the
+        image result collector, the producer coordinator) follows a saved address change without a restart."""
+        return comfy_origin()
 
     async def _request(
         self,

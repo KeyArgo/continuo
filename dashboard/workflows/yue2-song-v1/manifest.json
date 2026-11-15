@@ -122,8 +122,7 @@
    "label": "Lyrics",
    "kind": "text",
    "default": "",
-   "max_chars": 8000,
-   "required": true
+   "max_chars": 8000
   },
   {
    "id": "notes",
@@ -177,7 +176,7 @@
    "name": "yue2_3b_int8_convrot.safetensors"
   }
  ],
- "source": "The authors' presets (yue2_generation_config.json) plan 0.7/0.9/30/1.005, music 1.0/0.95/100/1.2, 32 steps dpm_2/sgm_uniform; split into two graphs so the notes (ABC) are text between the stages; AudioAdjustVolume -6 dB; PreviewAudio = temp only; optional Length in whole seconds trims the song with native TrimAudioDuration (start 0) before the -6 dB node, no fade; Length 0 = the model's own length (the trim then stands at Max length and cuts nothing)",
+ "source": "The authors' presets (yue2_generation_config.json) plan 0.7/0.9/30/1.005, music 1.0/0.95/100/1.2, 32 steps dpm_2/sgm_uniform; split into two graphs so the notes (ABC) are text between the stages; AudioAdjustVolume -6 dB; PreviewAudio = temp only; optional Length in whole seconds trims the song with native TrimAudioDuration (start 0) before the -6 dB node, no fade; Length 0 = the model's own length (the trim then stands at Max length and cuts nothing); Lyrics optional (w41-audio F20): empty lyrics = the official instrumental recipe (YuE2 docs/generation.md: empty lyrics, the melody moved to the Ins voice of the score); the pinned graphs take the empty string, mode stays full, the style is still required",
  "policy": {
   "graph_mutation": "declared_pointers_only",
   "custom_node_install": "never",

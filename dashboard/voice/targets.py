@@ -33,7 +33,7 @@ WORKFLOW_ROOT = _HERE.parents[4] / "workflows" if (_HERE.parents[4] / "workflows
 TARGET_IDS = ("omnivoice-clone-v1", "omnivoice-design-v1", "drama3-clone-v1")
 VOICE_FROM = frozenset({"clip", "description"})
 SECTIONS = ("delivery", "pauses", "performance")
-CONTROL_KINDS = frozenset({"integer", "number", "boolean"})
+CONTROL_KINDS = frozenset({"integer", "number", "boolean", "choice"})
 _MANIFEST_KEYS = frozenset({
     "schema", "id", "version", "kind", "provider_id", "api_file", "api_sha256", "engine", "engine_label", "operation",
     "label", "voice_from", "cue_dialect", "direction", "sample_rate", "text", "words", "reference", "description",
@@ -91,11 +91,19 @@ def write_pointer(graph: dict[str, Any], pointer: str, value: Any) -> None:
 
 def _check_control(control: Any, ids: set[str]) -> None:
     keys = {"id", "label", "section", "kind", "default"}
-    if type(control) is not dict or not keys <= set(control) or set(control) - keys - {"min", "max", "step"}:
+    if type(control) is not dict or not keys <= set(control) or set(control) - keys - {"min", "max", "step", "options"}:
         _fail("invalid control")
     if control["kind"] not in CONTROL_KINDS or control["section"] not in SECTIONS or control["id"] in ids:
         _fail("invalid control")
     ids.add(control["id"])
+    if control["kind"] == "choice":  # w41-audio F17: a closed list of words ("" = not set), written into a text input
+        options = control.get("options")
+        if set(control) != keys | {"options"} or type(options) is not list or not all(type(o) is str for o in options) \
+                or control["default"] not in options or len(set(options)) != len(options):
+            _fail("invalid control")
+        return
+    if "options" in control:
+        _fail("invalid control")
     if control["kind"] == "boolean":
         if type(control["default"]) is not bool or set(control) != keys:
             _fail("invalid control")
@@ -135,8 +143,17 @@ def validate(manifest: Mapping[str, Any], graph: Mapping[str, Any], api_bytes: b
         _fail("every control needs exactly one pointer")
     for control in manifest["controls"]:
         value = read_pointer(graph, manifest["parameters"][control["id"]]["pointer"])
+        if control["kind"] == "choice":
+            if type(value) is not str:
+                _fail(f"control {control['id']} points at the wrong input type")
+            continue
         if control["kind"] == "boolean" and type(value) is not bool or control["kind"] != "boolean" and (type(value) is bool or type(value) not in (int, float)):
             _fail(f"control {control['id']} points at the wrong input type")
+    shared = {}
+    for control in manifest["controls"]:
+        shared.setdefault(manifest["parameters"][control["id"]]["pointer"], []).append(control["kind"])
+    if any(len(kinds) > 1 and set(kinds) != {"choice"} for kinds in shared.values()):
+        _fail("only choice controls may share one pointer")
     for pointer, expected in manifest["fixed"].items():
         if read_pointer(graph, pointer) != expected or type(read_pointer(graph, pointer)) is not type(expected):
             _fail(f"graph does not hold its fixed value at {pointer}")
@@ -236,8 +253,17 @@ def compile_graph(target: Mapping[str, Any], *, text: str, values: Mapping[str, 
     unknown = set(values) - set(manifest["parameters"])
     if unknown:
         _fail(f"{manifest['engine_label']} has no setting {sorted(unknown)[0]}")
+    words_at: dict[str, list[str]] = {}
     for control in manifest["controls"]:
         value = values.get(control["id"], control["default"])
+        pointer = manifest["parameters"][control["id"]]["pointer"]
+        if control["kind"] == "choice":
+            if type(value) is not str or value not in control["options"]:
+                _fail(f"{control['label']} has no value {value!r}")
+            words_at.setdefault(pointer, [])
+            if value:
+                words_at[pointer].append(value)
+            continue
         if control["kind"] == "boolean":
             if type(value) is not bool:
                 _fail(f"{control['label']} must be on or off")
@@ -249,7 +275,14 @@ def compile_graph(target: Mapping[str, Any], *, text: str, values: Mapping[str, 
             value = int(value) if control["kind"] == "integer" else float(value)
             if not control["min"] <= value <= control["max"]:
                 _fail(f"{control['label']} must be {control['min']} to {control['max']}")
-        write_pointer(graph, manifest["parameters"][control["id"]]["pointer"], value)
+        write_pointer(graph, pointer, value)
+    for pointer, words in words_at.items():
+        # w41-audio F17: OmniVoice instruct = the chosen traits, comma separated (full-width with a Chinese dialect, the
+        # model's own separator); an accent is for English speech and a dialect for Chinese: the model refuses both.
+        dialect = any(w.endswith("\u8bdd") for w in words)
+        if dialect and any(w.endswith(" accent") for w in words):
+            _fail("Accent and Dialect cannot be combined: an accent is for English speech, a dialect for Chinese")
+        write_pointer(graph, pointer, ("\uff0c" if dialect else ", ").join(words))
     for pointer, expected in manifest["fixed"].items():
         if read_pointer(graph, pointer) != expected:
             _fail("a fixed value changed")

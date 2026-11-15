@@ -67,6 +67,11 @@ _child_env_spec = _child_env_import.spec_from_file_location(
 _child_env_module = _child_env_import.module_from_spec(_child_env_spec)
 _child_env_spec.loader.exec_module(_child_env_module)
 child_env = _child_env_module.child_env
+# w41-mac-b item 1 (PR #2 by @ShawnCRMer): the one rule for this machine's own folders (dashboard/local_data).
+_local_data_spec = _child_env_import.spec_from_file_location(
+    "film_suite_local_data", Path(__file__).resolve().parent / "local_data" / "__init__.py")
+local_data = _child_env_import.module_from_spec(_local_data_spec)
+_local_data_spec.loader.exec_module(local_data)
 
 # v6 makes uncertainty and provenance first-class. Tempo and meter now carry
 # fixed/variable/mixed/ambiguous/none status plus candidates and source;
@@ -231,9 +236,7 @@ def _engine_beats(y: np.ndarray, sr: int, duration: float, engine: str | None = 
 
 
 def _cache_dir() -> Path:
-    base = os.environ.get("LOCALAPPDATA")
-    if not base:
-        base = tempfile.gettempdir()
+    base = local_data.records_base()
     d = state_root(Path(base) / "hermes") / "analysis"
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -1925,7 +1928,8 @@ def analyze_cached(path: str | Path, engine: str | None = None, progress: Any = 
     """Same as analyze(), but cached to disk keyed by the file's SHA-256.
 
     Cache location: %LOCALAPPDATA%/hermes/film-suite/analysis/<hash>.json
-    (falls back to tempfile.gettempdir() if LOCALAPPDATA is unset).
+    (LOCALAPPDATA unset: ~/Library/Application Support on macOS, else tempfile.gettempdir();
+    dashboard/local_data).
     Entries are validated two ways before being trusted: the "schema"
     string must match the current SCHEMA, AND the entry must structurally
     contain every top-level key analyze() currently produces. The schema

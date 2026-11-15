@@ -412,7 +412,7 @@ class _OutputConsents:
 
 
 def _output_consents() -> _OutputConsents:
-    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    base = _local_data.records_base()
     return _OutputConsents(state_root(Path(base) / "hermes") / "output-folder-consents.json")
 
 

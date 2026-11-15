@@ -4,7 +4,8 @@ One adapter serves every create-only family whose graph needs no reference
 uploads (Anima, FLUX.2 Klein T2I, Ideogram 4, MOSS-Image, FLUX.3 Klein). Every
 model difference lives in the pinned manifest: typed slots, the prompt node,
 the size node, an optional prompt format check and optional pruned branches.
-The artist prompt is written byte-for-byte; nothing is rewritten here.
+The artist prompt is written byte-for-byte; the one exception is a JSON-caption
+prompt (Ideogram 4), whose same object is written compact (w41 img-b F12).
 """
 from __future__ import annotations
 
@@ -34,6 +35,8 @@ def _shared():
 WorkflowRequestError = _shared().WorkflowRequestError
 REQUEST_SCHEMA = _shared().REQUEST_SCHEMA
 FAMILIES = frozenset({"anima", "flux2_klein", "ideogram4", "moss_image", "flux3_klein", "p_h3_image"})
+# The prompt-upsampler node that reads the artist's words, per target, and the control that switches it on.
+UPSAMPLER_CANVAS = {"flux3-klein-sd-create-v1": {"node_id": "32", "control": "prompt_upsampler"}}
 
 
 class CatalogCreateWorkflowAdapter:
@@ -102,12 +105,22 @@ class CatalogCreateWorkflowAdapter:
                 raise WorkflowRequestError("prompt must be a JSON object") from exc
             if type(parsed) is not dict or not parsed:
                 raise WorkflowRequestError("prompt must be a JSON object")
+            # w41 img-b F12: the model was trained on compact captions (official template and maintainer: no
+            # indentation, no spaces after separators); pretty JSON is re-serialised, the words stay as written.
+            prompt = json.dumps(parsed, separators=(",", ":"), ensure_ascii=False)
         if request["references"] != []:
             raise WorkflowRequestError("reference count invalid")
         values = self._values(manifest, request["controls"])
         for slot in manifest["slots"]:
             _shared()._set_pointer(graph, slot["pointer"], self._slot_value(slot, values))
         graph[manifest["prompt"]["node_id"]]["inputs"]["value"] = prompt
+        upsampler = UPSAMPLER_CANVAS.get(request["target_id"])
+        if upsampler and values.get(upsampler["control"]):
+            # w41 img-b F8: BFL's t2i upsampler plans for a "TARGET CANVAS: W:H" first line (flux3 pup prompts; the
+            # pinned system prompt, node 31, says the same). Only the upsampler's input gets it; the caption path
+            # (switch on_false) and an upsampler that is off stay exactly as before.
+            ratio = str(values["aspect_ratio"]).split(" ")[0]
+            graph[upsampler["node_id"]]["inputs"]["prompt"] = f"TARGET CANVAS: {ratio}\n{prompt}"
         for branch in manifest.get("branches", []):
             if not values[branch["control"]]:
                 # OFF is structurally pruned: absent weights never block or load.
@@ -153,15 +166,9 @@ class CatalogCreateWorkflowAdapter:
             if not isinstance(schema, Mapping):
                 continue
             live = ((schema.get("input") or {}).get(slot["schema_group"]) or {}).get(slot["input_name"])
-            expected = slot["schema"]
-            compatible = isinstance(live, list) and bool(live)
-            if compatible:
-                if isinstance(expected[0], list):
-                    # A file picker: every offered option must still exist.
-                    compatible = isinstance(live[0], list) and all(v in live[0] for v in expected[0])
-                else:
-                    compatible = live == expected
-            if not compatible:
+            # The run's own sampler / scheduler / file must exist live, not the author's whole list (lane w41-mac-a,
+            # PR #2 by @ShawnCRMer); the one rule lives in the Qwen boundary this adapter already shares.
+            if not _shared().slot_compatible(graph, slot, live):
                 schema_mismatches.append(f"{slot['class_type']}.{slot['input_name']}")
         return {"state": "missing" if missing_classes or missing_files or schema_mismatches else "ready_static",
                 "missing_classes": sorted(set(missing_classes)), "missing_files": sorted(set(missing_files)),

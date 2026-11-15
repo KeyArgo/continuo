@@ -112,7 +112,7 @@
   "key": "audio",
   "extension": ".flac"
  },
- "source": "Saganaki22/ComfyUI-OmniVoice-TTS 0.4.7 live; voice_instruct uses the upstream vocabulary (gender, age, pitch, accent)",
+ "source": "Saganaki22/ComfyUI-OmniVoice-TTS 0.4.7 live; voice_instruct uses the upstream closed vocabulary (omnivoice 0.2.1 utils/voice_design.py: gender, age, pitch, style whisper, English accent, Chinese dialect)",
  "policy": {
   "graph_mutation": "declared_pointers_only",
   "custom_node_install": "never",

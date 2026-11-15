@@ -31,3 +31,25 @@ async def projects_loose_folders(request: LooseFoldersWriteRequest) -> dict[str,
     except (OSError, ValueError):
         return {"error": {"code": "project_io_failed", "message": "Project could not be saved"}}
     return {"revision": written["revision"], "approved_roots": written["approved_roots"]}
+
+
+# --- Folder grants taken back (lane w41-safe, MED-102) -------------------------------------------------------------
+# The host keeps the folders the artist granted Continuo (Hermes Settings > Plugins > Folder access) where the backend
+# cannot read them. The page reports the host's current list on start, after a grant and while it is open; a folder
+# granted before and missing now is revoked for every route (_request_roots) until a report holds it again. Page only:
+# Hermes cannot grant or revoke (refused folder_not_approved, like the Loose-work list).
+class FolderGrantsReport(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    granted: list[str] = Field(max_length=256)
+
+
+@project_router.put("/projects/folder-grants")
+async def projects_folder_grants(request: FolderGrantsReport) -> dict[str, Any]:
+    if _film_caller() == "hermes":
+        return _folder_refusal()
+    try:
+        document = await asyncio.to_thread(_folder_grants().report, request.granted)
+    except (OSError, ValueError):
+        return {"error": {"code": "project_io_failed", "message": "Project could not be saved"}}
+    return {"granted": document["granted"], "revoked": document["revoked"]}

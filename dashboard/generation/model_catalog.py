@@ -70,13 +70,14 @@ EVIDENCE_STATES = frozenset({"rendered", "failed"})
 MAX_EVIDENCE_BYTES = 64 * 1024
 # Same install the Krea render spec checks (krea2_render_spec.MODEL_ROOT.parent).
 if __package__:
-    from .comfy_root import comfy_root  # FILM_SUITE_COMFY_ROOT: the Suite's one ComfyUI root (w7-rest)
+    from .comfy_root import comfy_models, comfy_root  # the Suite's one ComfyUI root and models folder (w7-rest, w41-folders)
 else:  # loaded by file path (plugin_api's route bootstrap, the agent tools)
     import importlib.util as _root_util
     _root_spec = _root_util.spec_from_file_location("film_suite_comfy_root", Path(__file__).resolve().with_name("comfy_root.py"))
     _root_module = _root_util.module_from_spec(_root_spec)
     _root_spec.loader.exec_module(_root_module)
     comfy_root = _root_module.comfy_root
+    comfy_models = _root_module.comfy_models
 MAX_CATALOG_BYTES = 512 * 1024
 MAX_YAML_BYTES = 64 * 1024
 MAX_DEPTH = 3
@@ -232,7 +233,8 @@ def _parse_classes(value: Any, where: str) -> None:
             _ident(entry, at, _CLASS)
 
 
-def _parse_presets(value: Any, where: str) -> None:
+def _parse_presets(value: Any, where: str, model_files: frozenset[str] = frozenset()) -> None:
+    """``model_files``: the variant's own diffusion-model names; a preset may pick one of them (w41-img-a F3)."""
     ids = set()
     for index, preset in enumerate(_unique_list(value, where, min_len=1, max_len=16)):
         at = f"{where}[{index}]"
@@ -251,6 +253,9 @@ def _parse_presets(value: Any, where: str) -> None:
                     _fail(f"{at}.values.{key}")
             elif key in _STR_VALUES:
                 _ident(item, f"{at}.values.{key}")
+            elif key == "model":
+                if type(item) is not str or item not in model_files:
+                    _fail(f"{at}.values.{key}")
             else:
                 _fail(f"{at}.values.{key}")
         if preset["id"] in ids:
@@ -383,7 +388,8 @@ def _parse_variant(variant: Any, where: str, *, subscription: bool = False) -> N
         _parse_files(variant["files"], f"{where}.files")
     _parse_classes(variant["required_classes"], f"{where}.required_classes")
     if not (subscription and variant["presets"] == []):  # a subscription model has no sampler presets
-        _parse_presets(variant["presets"], f"{where}.presets")
+        model_files = frozenset((variant["files"].get("diffusion_model") or {}).get("names") or ())
+        _parse_presets(variant["presets"], f"{where}.presets", model_files)
     _int(variant["lora_max"], f"{where}.lora_max", 0, 64, nullable=True)
     _parse_resolution(variant["resolution"], f"{where}.resolution")
     _parse_stages(variant["stages"], f"{where}.stages")
@@ -561,6 +567,33 @@ def _read_extra_paths(comfy_root: Path) -> list[tuple[Path, dict[str, Any]]]:
             base = comfy_root / base
         out.append((base, section))
     return out
+
+
+def model_file_bytes(folder: str, name: str, max_bytes: int, root: Path | None = None) -> bytes | None:
+    """w41-qwen2: a small model-side file (a rewriter's system prompt) from this machine, or None.
+
+    The first folder of ``folder``'s kind that holds ``name``, in the order ``GET /models/missing`` reads them:
+    FILM_SUITE_COMFY_MODELS/<kind> when set, then ComfyUI's models/<kind> and extra_model_paths. A link, a
+    directory, a file above ``max_bytes`` or an unreadable file is None. Read-only; never more than one file.
+    """
+    if folder not in FOLDER_KINDS or not name or "/" in name or "\\" in name or name in (".", ".."):
+        return None
+    roots = list(model_roots(root)[folder])
+    configured = comfy_models() if root is None else None  # the variable, else the setting (w41-folders)
+    if configured:
+        roots = [Path(configured) / sub for sub in FOLDER_KINDS[folder]] + roots
+    for base in roots:
+        path = Path(base) / name
+        try:
+            if _is_link(Path(base)) or _is_link(path) or not path.is_file():
+                continue
+            if path.stat().st_size > max_bytes:
+                return None
+            data = path.read_bytes()
+        except OSError:
+            return None
+        return data if len(data) <= max_bytes else None
+    return None
 
 
 def model_roots(root: Path | None = None) -> dict[str, tuple[Path, ...]]:
@@ -868,6 +901,7 @@ def _now() -> str:
 # Kinds a caller sees when it names none: the Image and Shoot pickers predate voice
 # (lane fs-voice) and list every family they get, so voice families are opt-in.
 DEFAULT_KINDS = ("image", "video")
+DECLARED_REASON = "Declared only: no Suite workflow runs this variant"
 
 
 def public_catalog(
@@ -912,6 +946,10 @@ def public_catalog(
                 availability, reason = "unavailable", proof["reason"]
             elif offered:
                 availability, reason = "runnable", proof["reason"]
+            elif family["kind"] == "image" and not workflow:
+                # w41-img-a F15/F16: an image variant the catalog describes but no Suite workflow runs is declared,
+                # never offered; said plainly so an agent does not plan with it.
+                availability, reason = "declared", DECLARED_REASON
             else:
                 availability, reason = None, None
             if availability == "unavailable":

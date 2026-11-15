@@ -15,6 +15,10 @@ _migration_spec = _migration_import.spec_from_file_location("film_suite_legacy_m
 _migration_module = _migration_import.module_from_spec(_migration_spec)
 _migration_spec.loader.exec_module(_migration_module)
 state_root = _migration_module.state_root
+# w41-mac-b item 1 (PR #2 by @ShawnCRMer): the one rule for this machine's own folders (dashboard/local_data).
+_local_data_spec = _migration_import.spec_from_file_location("film_suite_local_data", Path(__file__).parent / "dashboard" / "local_data" / "__init__.py")
+_local_data = _migration_import.module_from_spec(_local_data_spec)
+_local_data_spec.loader.exec_module(_local_data)
 
 _ENGINE_PATH = Path(__file__).with_name("dashboard") / "music_analysis.py"
 _ENGINE_SPEC = importlib.util.spec_from_file_location("film_suite_agent_music_analysis", _ENGINE_PATH)
@@ -572,7 +576,7 @@ def _handle_image_catalog(args: dict[str, Any], **_kwargs: Any) -> str:
                 f"Pick with continuo_image_action select_tile {{axis, key}}. LoRA is multi-select (max {choices.get('lora_max', 32)}); selecting a picked LoRA again removes it.",
                 "Size and batch: set_size {format, mp | width, height, batch}; sampling.size and sampling.batch are the renderer bounds.",
                 "Character has no None tile; clear_axis on character is rejected.",
-                "models: availability runnable = in the picker and usable (reason says whether a render through the Suite is on record; no record is no reason to avoid it); unavailable models are not in the picker (reason says why: missing files, a failed render, not connected).",
+                "models: availability runnable = in the picker and usable (reason says whether a render through the Suite is on record; no record is no reason to avoid it); unavailable models are not in the picker (reason says why: missing files, a failed render, not connected); declared = described in the catalog with no Suite workflow, never submit it.",
                 "models[].run (catalog targets): batch {min, max} for continuo_image_workflow_submit batch (seed + index per picture); loras.available with loras [{file, strength, role?}] from that model's family, else loras.reason says why it is refused.",
                 "Options with written_for_nous_girl=true use she/her and hair wording; the pane warns when another character is picked.",
             ],
@@ -668,10 +672,8 @@ def _note_hermes_image_jobs(action: str, applied: Any) -> None:
         ids = [applied[k] for k in keys if isinstance(applied.get(k), str) and 0 < len(applied[k]) <= 160]
         if not ids:
             return
-        import os
         import sqlite3
-        import tempfile
-        base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+        base = _local_data.records_base()
         path = Path(state_root(Path(base) / "hermes")) / "job-authors.sqlite3"
         path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(str(path), timeout=5)
@@ -1211,6 +1213,23 @@ def register(ctx: Any) -> None:
     spec.loader.exec_module(route_tools)
     route_tools.register_route_tools(ctx)
     _register_skills(ctx)
+    _publish_settings_door(ctx)
+
+
+# Lane w41-settings item 2 (HER-091): the settings routes write through Hermes' own writer. Its public form is
+# ctx.set_config (PluginContext, hermes_cli/data/plugin_api.json), which lands in plugins_state.save_plugin_setting like
+# the automatic settings form. The dashboard routes have no ctx, so register() leaves it in ONE process-wide holder.
+SETTINGS_DOOR = "film_suite_settings_door"
+
+
+def _publish_settings_door(ctx: Any) -> None:
+    set_config = getattr(ctx, "set_config", None)
+    if not callable(set_config):
+        return
+    import sys
+    import types
+    door = sys.modules.setdefault(SETTINGS_DOOR, types.ModuleType(SETTINGS_DOOR))
+    door.set_config = set_config
 
 
 # Lane w19-g7hermes item 1 (HER-063; Hermes plugin guide "Bundle skills"): the Continuo skill routes intent to the tool
@@ -1221,6 +1240,9 @@ _SKILLS = (
     # Lane w39-skill: how to write prompts for the models the package ships (loaded as film-suite:<name>).
     ("video-prompts", "Use when writing or repairing a MiniMax H3 video prompt for a Continuo video take."),
     ("image-prompts", "Use when writing or repairing a prompt for a Continuo image model (create or edit)."),
+    # Lane w41-skills: voice and music prompting (lines, directions, voice descriptions, music prompts, lyrics, tags).
+    ("voice-prompts", "Use when writing a spoken line, direction or voice description for a Continuo voice take."),
+    ("music-prompts", "Use when writing a prompt, lyrics or loop tags for a Continuo music take."),
 )
 
 

@@ -39,6 +39,9 @@ MESSAGE = "Folder not approved."
 LOOSE_SCHEMA = "studio.loose-folders/1"
 LOOSE_FILE_NAME = "loose-work-folders.json"
 LOOSE_MAX_ROOTS = 64
+GRANTS_SCHEMA = "studio.folder-grants/1"
+GRANTS_FILE_NAME = "folder-grants.json"
+GRANTS_MAX = 256
 
 _LOG = logging.getLogger("film_suite.approved_roots")
 _LOOSE_LOCK = threading.RLock()
@@ -167,6 +170,88 @@ class LooseWorkFolders:
         return True
 
 
+class FolderGrants:
+    """Lane w41-safe (MED-102): the host's folder grants as the page last reported them, and the folders taken back.
+
+    The host keeps its grants (Hermes Settings > Plugins > Folder access) where the backend cannot read them, so the
+    page reports the current list (``PUT /projects/folder-grants``, the artist's page only). A folder that was granted
+    and is missing from a later report is revoked: no route reads it, in any project or in Loose work, until a report
+    holds it again. A folder the host never granted is not touched (project approvals stay the artist's own).
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+
+    def read(self) -> dict[str, Any]:
+        with _LOOSE_LOCK:
+            try:
+                raw = json.loads(self.path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                return {"schema": GRANTS_SCHEMA, "granted": [], "revoked": []}
+            except (OSError, ValueError):
+                raw = None
+        granted = raw.get("granted") if isinstance(raw, dict) else None
+        revoked = raw.get("revoked") if isinstance(raw, dict) else None
+        if not isinstance(granted, list) or not isinstance(revoked, list):
+            # An unreadable record revokes nothing it cannot name; the next report writes it again.
+            return {"schema": GRANTS_SCHEMA, "granted": [], "revoked": [], "unreadable": True}
+        return {"schema": GRANTS_SCHEMA, "granted": [g for g in granted if isinstance(g, str)],
+                "revoked": [r for r in revoked if isinstance(r, str)]}
+
+    def report(self, granted: Iterable[str]) -> dict[str, Any]:
+        """Store the host's current grants; answer the stored document (revoked = granted before, missing now)."""
+        now = list(dict.fromkeys(g.strip() for g in granted if canonical(g)))[:GRANTS_MAX]
+        keys = {canonical(g) for g in now}
+        with _LOOSE_LOCK:
+            before = self.read()
+            gone = [g for g in [*before["revoked"], *before["granted"]] if canonical(g) not in keys]
+            revoked = list(dict.fromkeys(gone))[:GRANTS_MAX]
+            document = {"schema": GRANTS_SCHEMA, "granted": now, "revoked": revoked}
+            if document["granted"] == before["granted"] and document["revoked"] == before["revoked"] and self.path.is_file():
+                return document
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            fd, temp = tempfile.mkstemp(prefix=".grants-", suffix=".json", dir=str(self.path.parent))
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump(document, handle, ensure_ascii=False, indent=2)
+                os.replace(temp, self.path)
+            except BaseException:
+                try:
+                    os.unlink(temp)
+                except OSError:
+                    pass
+                raise
+            return document
+
+    def revoked(self) -> list[str]:
+        return list(self.read()["revoked"])
+
+
+def without_revoked(roots: Iterable[Any], revoked: Iterable[Any]) -> list[Any]:
+    """``roots`` without every root that is a revoked folder or inside one (order kept)."""
+    gone = [c for c in (canonical(r) for r in revoked) if c]
+    roots = list(roots)
+    if not gone:
+        return roots
+    out = []
+    for root in roots:
+        key = canonical(root)
+        if key is not None and any(within(key, g) for g in gone):
+            continue
+        out.append(root)
+    return out
+
+
+def in_revoked(path: Any, revoked: Iterable[Any], held: Iterable[Any] = ()) -> bool:
+    """A path inside a revoked folder and inside none of ``held`` (roots still approved, e.g. a parent folder)."""
+    target = canonical(path)
+    if target is None:
+        return False
+    if any(within(target, c) for c in (canonical(r) for r in held) if c):
+        return False
+    return any(within(target, c) for c in (canonical(r) for r in revoked) if c)
+
+
 class LooseConflict(Exception):
     def __init__(self, revision: int) -> None:
         super().__init__("loose-work folders changed since this revision")
@@ -182,6 +267,7 @@ def effective_roots(
     known_project_roots: Callable[[], list[str]],
     loose: LooseWorkFolders,
     owned_roots: Iterable[Any] = (),
+    revoked: Iterable[Any] = (),
 ) -> tuple[list[str], list[str]]:
     """The roots a request may use: the request's list narrowed to the server's list.
 
@@ -191,9 +277,11 @@ def effective_roots(
     its roots no project approves (possibly none), so a project's folder never becomes a Loose-work folder
     by migration; Hermes never creates or changes it.
     Raises ``FolderNotApproved`` when Hermes names a folder outside the server's list.
+    ``revoked`` (w41-safe MED-102): folders the host took back; they leave the server's list wherever it comes from.
     """
     requested = [r for r in (request_roots or ())]
     owned = list(owned_roots)
+    revoked = list(revoked)
     if project_ref is not None:
         server = list(project_roots(project_ref))
     else:
@@ -201,6 +289,7 @@ def effective_roots(
             _kept, unknown = narrow(requested, list(known_project_roots()), owned)
             loose.seed([r for r in unknown if canonical(r)])
         server = list(loose.read()["approved_roots"])
+    server = without_revoked(server, revoked)
     kept, dropped = narrow(requested, server, owned)
     if dropped and caller == "hermes":
         raise FolderNotApproved()

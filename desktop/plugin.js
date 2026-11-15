@@ -14,6 +14,17 @@ var __export = (target, all) => {
     __defProp(target, name2, { get: all[name2], enumerable: true });
 };
 
+// desktop/film-suite/src/shared/util/keys.js
+var IS_MAC, modChord, modKeys, modKey;
+var init_keys = __esm({
+  "desktop/film-suite/src/shared/util/keys.js"() {
+    IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || "");
+    modChord = (rest2) => IS_MAC ? "⌘" + (rest2 === "Enter" ? "↵" : rest2) : "Ctrl+" + rest2;
+    modKeys = (rest2) => (IS_MAC ? "⌘ " : "Ctrl ") + rest2;
+    modKey = (event) => Boolean(event && (IS_MAC ? event.metaKey : event.ctrlKey));
+  }
+});
+
 // desktop/film-suite/src/script/editor/fountain.js
 function isHeading(line) {
   const s = String(line).trim();
@@ -50711,11 +50722,11 @@ function editorExtensions({ onDocChange = () => {
           event.preventDefault();
           return toggleDual(view);
         }
-        if (event.ctrlKey && event.shiftKey && !event.altKey && event.code === "KeyV") {
+        if (modKey(event) && event.shiftKey && !event.altKey && event.code === "KeyV") {
           fountainPaste.armed = Date.now();
           return false;
         }
-        if (!["Control", "Shift"].includes(event.key)) fountainPaste.armed = 0;
+        if (![IS_MAC ? "Meta" : "Control", "Shift"].includes(event.key)) fountainPaste.armed = 0;
         return false;
       },
       paste(event, view) {
@@ -51067,6 +51078,7 @@ var init_editor = __esm({
     init_find();
     init_sync();
     init_fountain();
+    init_keys();
     UNDO_GROUP_MS = 500;
     typewriterScrolling = [
       EditorState.transactionExtender.of((tr) => {
@@ -51216,6 +51228,7 @@ function defaultGenerationTarget(catalog = currentCatalog, blocked = () => false
 }
 
 // desktop/film-suite/src/shared/util/constants.js
+init_keys();
 import { icons } from "@hermes/plugin-sdk";
 var ID = "film-suite";
 var FPS = 24;
@@ -51294,10 +51307,7 @@ var MEDIA_CONTINUATION_OPTIONS = [
   { id: "usable", label: "Usable continuation" }
 ];
 var IDLE_STATUS = { tone: "info", text: "Direct console (no agent turn)" };
-var IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || "");
 var SUBMIT_KEYS = IS_MAC ? ["⌘", "↵"] : ["Ctrl", "↵"];
-var modChord = (rest2) => (IS_MAC ? "⌘" : "Ctrl+") + rest2;
-var modKeys = (rest2) => (IS_MAC ? "⌘ " : "Ctrl ") + rest2;
 
 // desktop/film-suite/src/shared/api/sdk-doors.js
 var os = null;
@@ -51307,12 +51317,38 @@ var files = null;
 var grants = [];
 var slashes = (value) => String(value || "").replace(/^file:\/\//i, "").replace(/\\/g, "/").replace(/\/+$/, "");
 var caseless = (value) => /^[a-z]:\//i.test(value) ? value.toLowerCase() : value;
+var reported = null;
+var reportOff = false;
+function reportGrants(list) {
+  if (reportOff || !restDoor) return;
+  const granted = list.map((row2) => row2 && typeof row2.path === "string" ? row2.path : "").filter(Boolean);
+  const key = JSON.stringify(granted);
+  if (key === reported) return;
+  reported = key;
+  void Promise.resolve(restDoor("/projects/folder-grants", { method: "PUT", body: { granted }, timeoutMs: 1e4 })).catch((error) => {
+    reported = null;
+    if (/\b404\b|Not Found|Invalid JSON/.test(String(error && error.message || error))) reportOff = true;
+  });
+}
 function refreshGrants() {
   if (!files || typeof files.folders !== "function") return Promise.resolve(grants);
   return Promise.resolve(files.folders()).then((list) => {
     grants = Array.isArray(list) ? list : [];
+    reportGrants(grants);
     return grants;
   }).catch(() => grants);
+}
+var watching = false;
+function watchGrants() {
+  if (watching || typeof document === "undefined" || typeof window === "undefined") return;
+  if (typeof window.addEventListener !== "function" || typeof document.addEventListener !== "function") return;
+  watching = true;
+  const again = () => {
+    if (document.visibilityState !== "hidden") void refreshGrants();
+  };
+  window.addEventListener("focus", again);
+  document.addEventListener("visibilitychange", again);
+  setInterval(again, 15e3);
 }
 function pickOpenFile({ filters, defaultPath, title } = {}) {
   if (!os || typeof os.pickOpenPath !== "function") return Promise.resolve("");
@@ -51364,7 +51400,9 @@ function setSdkDoors(ctx) {
   os = ctx && ctx.os || null;
   restDoor = ctx && typeof ctx.rest === "function" ? (...a) => ctx.rest(...a) : null;
   files = ctx && ctx.files || null;
+  reported = null;
   void refreshGrants();
+  if (files && typeof files.folders === "function") watchGrants();
 }
 
 // desktop/film-suite/src/shared/util/paths/is-url.js
@@ -53859,7 +53897,7 @@ function varyDefaultValues(variable, current2) {
   if (!variable) return [];
   if (variable.id === "seed") return [current2.seed, varyRandomSeed(), varyRandomSeed(), varyRandomSeed()];
   if (variable.id === "steps") return varyUnique([current2.steps, 4, 8, 16]).slice(0, 4);
-  if (variable.id === "cfg") return current2.profile === "raw" ? varyUnique([current2.cfg, 2.5, 3.5, 5]).slice(0, 4) : [1, 1.3, 1.6];
+  if (variable.id === "cfg") return current2.profile === "raw" ? varyUnique([current2.cfg, 3.5, 4.5, 5.5]).slice(0, 4) : [1, 1.3, 1.6];
   if (variable.id === "profile") return ["turbo", "raw"];
   if (variable.id === "sampler" || variable.id === "scheduler") {
     return varyUnique([current2[variable.id], ...variable.choices]).slice(0, 2);
@@ -55616,7 +55654,7 @@ var HERMES_MARK_SRC = Object.freeze({
 
 // desktop/film-suite/src/shared/ui/hermes-mark.js
 var variant = null;
-var watching = false;
+var watching2 = false;
 var probe = null;
 function luminance(css) {
   const m = /rgba?\(([^)]+)\)/.exec(String(css || ""));
@@ -55650,8 +55688,8 @@ function refresh() {
   }
 }
 function watch() {
-  if (watching || typeof document === "undefined" || typeof MutationObserver !== "function") return;
-  watching = true;
+  if (watching2 || typeof document === "undefined" || typeof MutationObserver !== "function") return;
+  watching2 = true;
   let frame = 0;
   const bump2 = () => {
     if (frame) return;
@@ -59035,12 +59073,12 @@ function MusicProOverview({ duration, peaks, rate, viewStart, viewEnd, playhead,
   const dragging = useRef(false);
   const [width, setWidth] = useState(0);
   useEffect(() => {
-    const host7 = hostRef.current;
-    if (!host7) return void 0;
-    const measure = () => setWidth(Math.max(1, Math.round(host7.getBoundingClientRect().width)));
+    const host8 = hostRef.current;
+    if (!host8) return void 0;
+    const measure = () => setWidth(Math.max(1, Math.round(host8.getBoundingClientRect().width)));
     measure();
     const observer = new ResizeObserver(measure);
-    observer.observe(host7);
+    observer.observe(host8);
     return () => observer.disconnect();
   }, []);
   const move2 = (event) => {
@@ -59383,8 +59421,8 @@ function MusicProPanel({
   useEffect(() => {
     if (!audioRow || !mapTracks.length || !rootRef.current || storageGet(AUDIO_LANES_KEY, false)) return;
     storageSet(AUDIO_LANES_KEY, true);
-    const host7 = rootRef.current.closest && rootRef.current.closest(".fim") || rootRef.current;
-    if (host7.getBoundingClientRect().width >= 900) return;
+    const host8 = rootRef.current.closest && rootRef.current.closest(".fim") || rootRef.current;
+    if (host8.getBoundingClientRect().width >= 900) return;
     smapSetHidden([.../* @__PURE__ */ new Set([...hiddenTracks, ...mapTracks.map((t2) => t2.id)])]);
     if (energyRows.length) timing?.onLayers?.({ ...layers, energy: false });
   }, [audioRow, mapTracks.length]);
@@ -59418,12 +59456,12 @@ function MusicProPanel({
   const wholeSong = viewEnd - viewStart >= duration - 0.01;
   useEffect(() => () => clearTimeout(snapTimer.current), []);
   useEffect(() => {
-    const host7 = tlRef.current;
-    if (!host7) return void 0;
-    const measure = () => setWidth(Math.max(1, Math.round(host7.clientWidth)));
+    const host8 = tlRef.current;
+    if (!host8) return void 0;
+    const measure = () => setWidth(Math.max(1, Math.round(host8.clientWidth)));
     measure();
     const observer = new ResizeObserver(measure);
-    observer.observe(host7);
+    observer.observe(host8);
     return () => observer.disconnect();
   }, []);
   const timeAt = (clientX) => {
@@ -59481,10 +59519,10 @@ function MusicProPanel({
     if (disabled) return;
     event.preventDefault();
     event.stopPropagation();
-    const host7 = tlRef.current;
+    const host8 = tlRef.current;
     const time = timeAt(event.clientX);
-    drag.current = { mode, target: host7, startX: event.clientX, snapOff: Boolean(event.altKey), moved: false, at: time, ...extra };
-    host7?.setPointerCapture?.(event.pointerId);
+    drag.current = { mode, target: host8, startX: event.clientX, snapOff: Boolean(event.altKey), moved: false, at: time, ...extra };
+    host8?.setPointerCapture?.(event.pointerId);
     if (mode === "seek") onSeek(time);
   };
   const onWavePointerDown = (event) => {
@@ -61041,7 +61079,7 @@ function useProjectSession() {
 }
 function useProjectDialogHost(enabled = true, priority = false) {
   const [id] = useState(() => "chooser_" + Math.random().toString(36).slice(2));
-  const host7 = useValue4($projectDialogHost);
+  const host8 = useValue4($projectDialogHost);
   useEffect(() => {
     if (!enabled) return void 0;
     if (priority || !$projectDialogHost.get()) $projectDialogHost.set(id);
@@ -61051,8 +61089,8 @@ function useProjectDialogHost(enabled = true, priority = false) {
   }, [id, enabled]);
   useEffect(() => {
     if (enabled && !$projectDialogHost.get()) $projectDialogHost.set(id);
-  }, [host7, id, enabled]);
-  return Boolean(enabled) && host7 === id;
+  }, [host8, id, enabled]);
+  return Boolean(enabled) && host8 === id;
 }
 
 // desktop/film-suite/src/shoot/parts/use-shoot-dirty-decision.js
@@ -62069,9 +62107,10 @@ async function postImport(ownerScope, body2) {
   if (!payload || payload.error || payload.state !== "published") throw new Error(payload && payload.error && payload.error.message || "The picture could not be imported");
   return { jobId: payload.image_producer_job_id, width: payload.width, height: payload.height, label: payload.imported && payload.imported.file_name || "Picture" };
 }
-async function importPicture(ownerScope, { path = "", file = null, wake = null } = {}) {
+async function importPicture(ownerScope, { path = "", file = null, wake = null, picked = false } = {}) {
   if (path) {
     if (!isImportPath(path)) throw new Error(`${basename(path)} is not a picture Continuo can open (PNG, JPEG, WebP or TIFF)`);
+    if (picked) return postImport(ownerScope, { path, picked: true, ...requestContext([]) });
     const roots = await rootsFor(path, wake);
     return postImport(ownerScope, { path, ...requestContext(roots) });
   }
@@ -62086,19 +62125,20 @@ function openImported(picture) {
 }
 
 // desktop/film-suite/src/shoot/keyframes/dropped-picture.js
-async function stageDroppedPictures(files2, ownerScope = imageOwnerScope(contextProject())) {
+var stagePickedPictures = (paths, ownerScope) => stageDroppedPictures(paths, ownerScope, { picked: true });
+async function stageDroppedPictures(files2, ownerScope = imageOwnerScope(contextProject()), { picked = false } = {}) {
   const paths = [], labels = {};
   let error = "";
   for (const file of files2) {
     try {
-      const picture = await importPicture(ownerScope, { file });
+      const picture = await importPicture(ownerScope, picked ? { path: file, picked: true } : { file });
       const staged = await stageOpeningFrame(ownerScope, picture.jobId);
       if (staged.error) {
         error = staged.error;
         continue;
       }
       paths.push(staged.path);
-      labels[staged.path] = file.name || picture.label || "";
+      labels[staged.path] = (picked ? String(file).split(/[\/]/).pop() : file.name) || picture.label || "";
     } catch (failure3) {
       error = String(failure3 && failure3.message || failure3);
     }
@@ -71762,7 +71802,7 @@ function addOps(model, sources, place2) {
   const what = sources.length === 1 ? sources[0].label || (sources[0].kind === "picture" ? "picture" : sources[0].kind === "media" ? "clip" : "take") : `${sources.length} clips`;
   const label2 = place2.where === "playhead" ? `Insert ${what} at ${formatTimecode(model.startTc + place2.frame, model.rate)}` : `Add ${what} to the end of ${place2.track}`;
   const n = sources.length, clips = `${n} clip${n === 1 ? "" : "s"}`;
-  const note = place2.where === "playhead" ? `Inserted ${clips} at ${formatTimecode(model.startTc + place2.frame, model.rate)} on ${place2.track} · Ctrl+Z undoes` : `Added ${clips} to ${place2.track} · Ctrl+Z undoes`;
+  const note = place2.where === "playhead" ? `Inserted ${clips} at ${formatTimecode(model.startTc + place2.frame, model.rate)} on ${place2.track} · ${modChord("Z")} undoes` : `Added ${clips} to ${place2.track} · ${modChord("Z")} undoes`;
   return { ops, label: label2.slice(0, 120), note };
 }
 async function registerFootage(sources, register) {
@@ -73153,8 +73193,10 @@ function imageControlWord(label2) {
   return w ? { text: w[0], title: w[1], name: name2 } : { text: String(label2), title: String(label2), name: name2 };
 }
 function ImageTargetControls({ target }) {
+  const sideMax = target.run && target.run.size && target.run.size.max_side_px;
   return target.descriptor.controls.map((c0) => {
     const word = imageControlWord(c0.label);
+    if (c0.id === "megapixels" && sideMax) word.title = `${word.title} · this model makes at most ${sideMax} px per side; a larger value is lowered to fit the format`;
     const c = { ...c0, label: word.name };
     const value = target.values[c.id];
     const set = (next) => target.setControl(c.id, next);
@@ -78550,7 +78592,7 @@ function useImageGenerative({ doc: doc2, dev, commit, gestureRef, endBefore, mod
     jsx48(FwButton, { variant: "ghost", icon: "x", "data-testid": "fw-gen-layer-delete", "aria-label": `Delete ${layerName(l)}`, title: "Delete", onClick: () => drop2(l.id) }, "del"),
     l.op === LAYER_CUTOUT ? cut2.maskRows(l) : null
   ] }, l.id)) }, "list") : jsx48("p", { className: "fw-faint", "data-testid": "fw-gen-none", children: "No layers" }, "none") }, "gen-layers") : null;
-  const foot = doc2 ? [jsx48("span", { className: "fw-grow" }, "g"), jsx48(FwButton, { variant: "primary", large: true, "data-testid": "fw-gen-run", disabled: !canRun, title: why || "Generate (Ctrl+Enter)", onClick: () => run(), children: "Generate" }, "run")] : null;
+  const foot = doc2 ? [jsx48("span", { className: "fw-grow" }, "g"), jsx48(FwButton, { variant: "primary", large: true, "data-testid": "fw-gen-run", disabled: !canRun, title: why || `Generate (${modChord("Enter")})`, onClick: () => run(), children: "Generate" }, "run")] : null;
   const agentState = () => ({ layers: layers.map((l) => l.op === LAYER_CUTOUT ? cut2.agentLayer(l) : { id: l.id, operation: l.op, prompt: l.prompt, ...Number.isInteger(l.strength) ? { strength: l.strength / 100 } : {}, ...l.target ? { target: l.target } : {}, ...l.area ? { area: l.area } : {}, model: l.model || defaultModel, ...l.sky ? { sky: l.sky } : {}, variants: l.variants, variant: l.variant, on: l.on, ready: PATCHES.has(layerKey(l)), stale: stale(l) }), job: job ? { state: job.state, text: job.text } : null, model, models: opModels.map((m) => m.id), ...warned2.length ? { warnings: Object.fromEntries(opModels.filter((m) => editModelWarn(m.id, op)).map((m) => [m.id, editModelWarn(m.id, op).slice(0, 400)])) } : {}, ...op !== "relight" && STRENGTH_DEFAULT[op] !== void 0 ? { strength: stNow.takes ? { value: stPct / 100, takes: true } : { value: 1, takes: false, why: stNow.why } } : {}, area: areaId === AREA_SEL ? "selection" : areaId, operation: op, ...op === "relight" ? { light: light.agentState() } : {} });
   const pending = layers.some((l) => l.on && (l.op === LAYER_CUTOUT ? !cut2.ready(l) : !PATCHES.has(layerKey(l)) && !NO_RESULT.has(layerKey(l))));
   const recipe = () => layers.filter((l) => l.on).map((l) => l.op === LAYER_CUTOUT ? { cutout: l.seg, ...cutoutMask(l) } : { edit: l.edit, variant: l.variant });
@@ -81859,7 +81901,7 @@ function useImageOutpaint({ doc: doc2, dev = null, crop = null, shown = null, or
     jsxs47("div", { className: "fw-prow", children: [jsx55("span", { className: "fw-lbl", children: "Seed" }, "l"), jsx55("div", { className: "fw-pctl", children: jsx55(FwNumber, { label: "Seed", testid: "fw-op-seed", value: seed, min: 0, max: 2 ** 31 - 1, integer: true, onCommit: (v) => setSeed(Math.max(0, Math.round(v))) }) }, "c")] }, "sd"),
     jsxs47("div", { className: "fw-btnrow fw-btnrow2", children: [
       jsx55(FwButton, { "data-testid": "fw-op-reset", disabled: !SIDES.some((k) => margins[k]), title: "No added canvas", onClick: () => setMargins(ZERO), children: "Reset" }, "r"),
-      jsx55(FwButton, { variant: "primary", "data-testid": "fw-op-run", disabled: Boolean(why), title: why || "Outpaint (Ctrl+Enter in the prompt)", onClick: () => run(), children: "Outpaint" }, "run")
+      jsx55(FwButton, { variant: "primary", "data-testid": "fw-op-run", disabled: Boolean(why), title: why || `Outpaint (${modChord("Enter")} in the prompt)`, onClick: () => run(), children: "Outpaint" }, "run")
     ] }, "b"),
     statusEl,
     resultEl
@@ -82480,9 +82522,9 @@ function useImageDevelopPresets({ doc: doc2, dev, commit, gestureRef, endBefore,
     ] }, "presets"),
     jsxs49(FieldRow, { className: "fw-presetrow is-copy has-sel", children: [
       jsx57("span", { className: "fw-lbl", children: "Settings" }, "l"),
-      jsx57(FwButton, { "data-testid": "fw-dev-copy", title: "Copy every adjustment group of this picture (Ctrl+Shift+C); masks, layers and the crop stay", onClick: () => copy(), children: "Copy" }, "c"),
-      jsx57(FwButton, { variant: "ghost", icon: "chev", "data-testid": "fw-dev-copysel", "aria-expanded": picking !== null, "aria-label": "Copy…", title: "Copy chosen groups… (Ctrl+Alt+Shift+C copies the last choice)", onClick: () => setPicking(picking ? null : copyGroupsRead()) }, "cs"),
-      jsx57(FwButton, { "data-testid": "fw-dev-paste", title: clip3 ? "Paste the copied adjustments onto this picture (Ctrl+Shift+V, one undo step)" : "No settings copied", disabled: !clip3, onClick: paste, children: "Paste" }, "v")
+      jsx57(FwButton, { "data-testid": "fw-dev-copy", title: `Copy every adjustment group of this picture (${modChord("Shift+C")}); masks, layers and the crop stay`, onClick: () => copy(), children: "Copy" }, "c"),
+      jsx57(FwButton, { variant: "ghost", icon: "chev", "data-testid": "fw-dev-copysel", "aria-expanded": picking !== null, "aria-label": "Copy…", title: `Copy chosen groups… (${modChord("Alt+Shift+C")} copies the last choice)`, onClick: () => setPicking(picking ? null : copyGroupsRead()) }, "cs"),
+      jsx57(FwButton, { "data-testid": "fw-dev-paste", title: clip3 ? `Paste the copied adjustments onto this picture (${modChord("Shift+V")}, one undo step)` : "No settings copied", disabled: !clip3, onClick: paste, children: "Paste" }, "v")
     ] }, "copy"),
     picking ? copyGroupsPanel() : null,
     ...fileRows2
@@ -84693,7 +84735,7 @@ function useImageBox(ctx) {
   const foot = on ? [
     jsx62("span", { className: "fw-grow" }, "g"),
     jsx62("span", { className: "fw-faint fw-box-local", "data-testid": "fw-box-local", children: "Local" }, "loc"),
-    jsx62(FwButton, { variant: "primary", large: true, "data-testid": "fw-box-apply", disabled: Boolean(runWhy), title: runWhy || "Apply (Ctrl+Enter)", onClick: () => apply(), children: "Apply" }, "run"),
+    jsx62(FwButton, { variant: "primary", large: true, "data-testid": "fw-box-apply", disabled: Boolean(runWhy), title: runWhy || `Apply (${modChord("Enter")})`, onClick: () => apply(), children: "Apply" }, "run"),
     jsx62("div", { className: "fw-box-n-sel", title: "Variants", children: jsx62(FwSelect, { label: "Variants", value: String(Math.min(variants, variantsMax)), options: Array.from({ length: variantsMax }, (_, i2) => String(i2 + 1)), labels: Object.fromEntries(Array.from({ length: variantsMax }, (_, i2) => [String(i2 + 1), `× ${i2 + 1}`])), onChange: (v) => setVariants(Number(v)) }) }, "n")
   ] : null;
   const agentState = () => ({
@@ -98657,7 +98699,7 @@ function ChangeActions({ editor, entry: entry2, busy: busy2, onUndo, onAccept, t
       return;
     }
     const at2 = ed.actions.changeBox(entry2.change.id);
-    const host7 = box.parentElement.getBoundingClientRect();
+    const host8 = box.parentElement.getBoundingClientRect();
     const content2 = ed.view.contentDOM.getBoundingClientRect();
     const scroller = ed.view.scrollDOM.getBoundingClientRect();
     if (!at2 || at2.bottom < scroller.top || at2.top > scroller.bottom) {
@@ -98684,20 +98726,20 @@ function ChangeActions({ editor, entry: entry2, busy: busy2, onUndo, onAccept, t
       if (r.width >= 1) rects.push(r);
     }
     const free = (l, cy) => {
-      const L = host7.left + l, R3 = L + w, T = cy - h / 2, B = cy + h / 2;
-      return L >= host7.left && R3 <= host7.right && T >= scroller.top && B <= scroller.bottom && !rects.some((r) => r.right > L && r.left < R3 && r.bottom > T && r.top < B);
+      const L = host8.left + l, R3 = L + w, T = cy - h / 2, B = cy + h / 2;
+      return L >= host8.left && R3 <= host8.right && T >= scroller.top && B <= scroller.bottom && !rects.some((r) => r.right > L && r.left < R3 && r.bottom > T && r.top < B);
     };
     const rowEnd = glyphs.filter((r) => Math.abs((r.top + r.bottom) / 2 - mid) < lh / 2).reduce((m, r) => Math.max(m, r.right), at2.right || content2.left);
     const candidates = [
-      [content2.right - host7.left + gap, mid],
-      [Math.min(rowEnd + gap, textRight - w) - host7.left, mid],
-      [textLeft - gap - w - host7.left, mid],
-      [(at2.right || textLeft) - host7.left - w / 2, at2.top - h / 2 - 1],
-      [(at2.right || textLeft) - host7.left - w / 2, at2.bottom + h / 2 + 1]
+      [content2.right - host8.left + gap, mid],
+      [Math.min(rowEnd + gap, textRight - w) - host8.left, mid],
+      [textLeft - gap - w - host8.left, mid],
+      [(at2.right || textLeft) - host8.left - w / 2, at2.top - h / 2 - 1],
+      [(at2.right || textLeft) - host8.left - w / 2, at2.bottom + h / 2 + 1]
     ];
-    const outsideFits = content2.right - host7.left + gap + w <= host7.width - 4;
+    const outsideFits = content2.right - host8.left + gap + w <= host8.width - 4;
     const pick = (outsideFits ? candidates : candidates.slice(1)).find(([l, cy]) => free(l, cy)) || candidates[outsideFits ? 0 : 1];
-    setPos({ top: Math.round(pick[1] - host7.top), left: Math.round(pick[0]) });
+    setPos({ top: Math.round(pick[1] - host8.top), left: Math.round(pick[0]) });
   }, [tick2, entry2 && entry2.change.id, editor]);
   if (!entry2) return null;
   return jsx103("div", { className: "fss2-rev", children: jsxs85("div", { ref, className: "fss2-rev-box", "data-testid": "script-change-actions", "data-change": entry2.change.id, style: pos2 ? { top: pos2.top + "px", left: pos2.left + "px" } : { visibility: "hidden" }, children: [
@@ -98948,16 +98990,16 @@ function scriptCommands() {
     { id: "previous_scene", label: "Previous scene", keys: "Alt+↑", run: () => after(ed().actions.previousScene()) },
     { id: "next_scene", label: "Next scene", keys: "Alt+↓", run: () => after(ed().actions.nextScene()) },
     { id: "find", label: "Find and replace", keys: "Ctrl+H", run: () => after(ed().actions.find()) },
-    { id: "undo", label: "Undo", keys: "Ctrl+Z", run: () => after(ed().actions.undo()) },
-    { id: "redo", label: "Redo", keys: "Ctrl+Y", run: () => after(ed().actions.redo()) },
-    { id: "paste_fountain", label: "Paste Fountain as elements", keys: "Ctrl+Shift+V", palette: async () => {
+    { id: "undo", label: "Undo", keys: modChord("Z"), run: () => after(ed().actions.undo()) },
+    { id: "redo", label: "Redo", keys: modChord("Y"), run: () => after(ed().actions.redo()) },
+    { id: "paste_fountain", label: "Paste Fountain as elements", keys: modChord("Shift+V"), palette: async () => {
       const clip3 = typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.readText ? await navigator.clipboard.readText().catch(() => "") : "";
       return clip3 ? after(ed().actions.pasteFountain(clip3)) : refuse3("script_clipboard_empty", "The clipboard holds no text.");
     }, run: (p) => {
       const t2 = text2(p.text, 65536);
       return t2 ? after(ed().actions.pasteFountain(t2)) : refuse3("script_bad_payload", "text: Fountain, up to 65536 characters.");
     } },
-    { id: "focus_mode", label: "Focus mode", keys: "Ctrl+Shift+D", run: (p) => {
+    { id: "focus_mode", label: "Focus mode", keys: modChord("Shift+D"), run: (p) => {
       const on = typeof p.on === "boolean" ? p.on : !live.focus;
       live.setFocus(on);
       return ok3({ focus_mode: on });
@@ -99256,7 +99298,7 @@ function SceneTab({ data, sid, ownerScope, items, onSynopsis, onJumpShot, onName
             e.stopPropagation();
             setDraft(scene.synopsis);
           }
-          if (e.key === "Enter" && e.ctrlKey) {
+          if (e.key === "Enter" && modKey(e)) {
             e.preventDefault();
             save();
           }
@@ -99390,11 +99432,24 @@ function startFrame({ data, shot, existing = [], order = null }) {
   requestPage("image");
   return { shot: shot.id, number: shot.number, prompt: framePrompt(scene, shot), opened: true, reference: previous ? previous.id : null };
 }
-function ScriptWrite({ project, projectRef, query, title, titleSource = "", visible, onError, onImport = null, importing = false }) {
+function ScriptWrite({ project, projectRef, query, title, titleSource = "", visible, onError, onImport = null, importing = false, importAsk = null, importUndo = null }) {
   const data = query.data;
   const deskRef = useRef(null);
   const editorRef = useRef(null);
   const [moveUndo, setMoveUndo] = useState(null);
+  useEffect(() => {
+    if (importUndo) setMoveUndo(importUndo);
+  }, [importUndo]);
+  useEffect(() => {
+    if (!importAsk) return void 0;
+    const doc2 = deskRef.current && deskRef.current.ownerDocument;
+    if (!doc2) return void 0;
+    const away = (event) => {
+      if (!(event.target && event.target.closest && event.target.closest('[data-testid="script-import-ask"]'))) importAsk.cancel();
+    };
+    doc2.addEventListener("pointerdown", away, true);
+    return () => doc2.removeEventListener("pointerdown", away, true);
+  }, [importAsk]);
   const own2 = useRef({ revisions: /* @__PURE__ */ new Set(), inflight: 0, seen: data.revision, waiting: false });
   const [caret, setCaret] = useState({ scene: null, element: "" });
   const [focus, setFocus] = useState(false);
@@ -99637,12 +99692,12 @@ function ScriptWrite({ project, projectRef, query, title, titleSource = "", visi
   }, [visible]);
   useEffect(() => visible ? contribute(paletteRows()) || void 0 : void 0, [visible]);
   const onKeyDown = (event) => {
-    if (event.ctrlKey && event.shiftKey && !event.altKey && event.code === "KeyD") {
+    if (modKey(event) && event.shiftKey && !event.altKey && event.code === "KeyD") {
       event.preventDefault();
       setFocus((f2) => !f2);
       return;
     }
-    if (event.ctrlKey && !event.shiftKey && !event.altKey && event.code === "KeyZ" && !event.defaultPrevented && moveLive) {
+    if (modKey(event) && !event.shiftKey && !event.altKey && event.code === "KeyZ" && !event.defaultPrevented && moveLive) {
       event.preventDefault();
       void undoMove();
       return;
@@ -99785,9 +99840,9 @@ function ScriptWrite({ project, projectRef, query, title, titleSource = "", visi
   const moveLive = Boolean(moveUndo && data.revision <= moveUndo.after && !(editorOn && editorOn.undoDepth() > 0));
   const canUndo = Boolean(editorOn && (editorOn.undoDepth() > 0 || moveLive)), canRedo = Boolean(editorOn && editorOn.redoDepth() > 0);
   const elementNow = caret.element || "action";
-  const runImport = () => {
-    if (editorRef.current) void editorRef.current.flush().then(onImport);
-    else onImport();
+  const runImport = (from) => {
+    if (editorRef.current) void editorRef.current.flush().then(() => onImport(from));
+    else onImport(from);
   };
   const exportItems = ["pdf", "fountain", "fdx"].map((f2) => jsx105("button", { type: "button", role: "menuitem", className: "fss2-item fw-b", "data-format": f2, onClick: () => {
     setMenu(null);
@@ -99841,7 +99896,7 @@ function ScriptWrite({ project, projectRef, query, title, titleSource = "", visi
           if (moveLive) void undoMove();
           else editorRef.current.actions.undo();
           editorRef.current.view.focus();
-        }, "data-testid": "script-undo", "aria-label": "Undo", title: "Undo (Ctrl+Z)" }, "u"),
+        }, "data-testid": "script-undo", "aria-label": "Undo", title: `Undo (${modChord("Z")})` }, "u"),
         jsx105(FwButton, { variant: "ghost", icon: "redo", className: "fw-btn-icon", disabled: !canRedo, disabledReason: canRedo ? "" : !editorOn ? "Redo · The script is not open for writing" : "Redo · Nothing to redo", onClick: () => {
           if (editorRef.current) {
             editorRef.current.actions.redo();
@@ -99857,11 +99912,12 @@ function ScriptWrite({ project, projectRef, query, title, titleSource = "", visi
           menu === "file" || exporting ? jsxs86("div", { className: "fss2-pop", role: "menu", "data-testid": "script-file-menu", children: [
             onImport ? jsx105("button", { type: "button", role: "menuitem", className: "fss2-item fw-b", disabled: importing, "data-testid": "script-import", onClick: () => {
               setMenu(null);
-              runImport();
+              runImport("file");
             }, children: importing ? "Importing…" : "Import…" }, "im") : null,
             jsx105("div", { className: "fss2-pop-label", role: "presentation", children: "Export" }, "xl"),
             jsx105("div", { role: "group", "aria-label": "Export", "data-testid": "script-export-menu", className: "fss2-pop-grp", children: exportItems }, "x")
-          ] }, "m") : null
+          ] }, "m") : null,
+          importAsk && importAsk.from === "file" ? importAsk.el : null
         ] }, "x")
       ] }, "file"),
       jsxs86("span", { className: "fss2-grp fss2-wide", "data-group": "view", children: [
@@ -99876,10 +99932,11 @@ function ScriptWrite({ project, projectRef, query, title, titleSource = "", visi
       jsxs86("span", { className: "fss2-menu fss2-grp fss2-more", "data-group": "more", children: [
         jsx105("button", { type: "button", className: "fw-btn fw-btn-ghost fw-btn-icon", "aria-expanded": menu === "more", "aria-haspopup": "menu", "aria-label": "More", onClick: () => openMenu("more"), "data-testid": "script-more", title: "More: Import, Export, View, Focus", children: jsx105(FwIcon, { name: "more" }) }, "b"),
         menu === "unlock-more" ? lock.ask : null,
+        importAsk && importAsk.from === "more" ? importAsk.el : null,
         menu === "more" ? jsxs86("div", { className: "fss2-pop", role: "menu", "data-testid": "script-more-menu", children: [
           onImport ? jsx105("button", { type: "button", role: "menuitem", className: "fss2-item fw-b", disabled: importing, "data-testid": "script-more-import", onClick: () => {
             setMenu(null);
-            runImport();
+            runImport("more");
           }, children: importing ? "Importing…" : "Import…" }, "im") : null,
           jsx105("div", { className: "fss2-pop-label", role: "presentation", children: "Export" }, "xl"),
           jsx105("div", { role: "group", "aria-label": "Export", "data-testid": "script-export-menu", className: "fss2-pop-grp", children: exportItems }, "x"),
@@ -99888,7 +99945,7 @@ function ScriptWrite({ project, projectRef, query, title, titleSource = "", visi
           jsxs86("button", { type: "button", role: "menuitem", className: "fss2-item fss2-item-row fw-b", "data-testid": "script-more-focus", onClick: () => {
             setMenu(null);
             setFocus(true);
-          }, children: [jsx105("span", { children: "Focus" }, "l"), jsx105("span", { className: "fss2-key", children: "Ctrl+Shift+D" }, "k")] }, "f")
+          }, children: [jsx105("span", { children: "Focus" }, "l"), jsx105("span", { className: "fss2-key", children: modChord("Shift+D") }, "k")] }, "f")
         ] }, "m") : null
       ] }, "more"),
       jsx105("button", { type: "button", className: "fw-btn fw-btn-ghost fw-btn-icon fss2-narrow fss2-insp-btn", "aria-pressed": inspShown, onClick: () => setInspector(!inspShown), "data-testid": "script-show-scene", "aria-label": "Scene inspector", title: "Scene inspector: Scene · History (Ctrl+[)", children: jsx105(FwIcon, { name: "panel-r" }) }, "ss")
@@ -100048,16 +100105,64 @@ function ScriptPage({ project, query, onOpenProject = null, visible = true }) {
     timeoutMs: 3e4,
     body: { project_ref: ref, expected_revision: revision, by: "artist", entries: [{ key: "Title", value: (project && project.name ? project.name : "Untitled").slice(0, 200) }] }
   }));
-  const importScript = async () => {
-    const file = await chooseScriptFile();
-    if (!file) return;
+  const [ask, setAsk] = useState(null);
+  const [importUndo, setImportUndo] = useState(null);
+  useEffect(() => {
+    setAsk(null);
+    setImportUndo(null);
+  }, [ref && ref.project_id]);
+  const nameOf3 = (file) => String(file.name).split(/[\/]/).pop().slice(0, 120);
+  const importFile = async (file) => {
     const format = /\.fdx$/i.test(file.name) ? "fdx" : "fountain";
-    const name2 = String(file.name).split(/[\\/]/).pop().slice(0, 120);
+    const name2 = nameOf3(file);
     await run("import", async () => {
       const text2 = await readTextFile(file);
-      return rest("/projects/script/import", { method: "POST", timeoutMs: 6e4, body: { project_ref: ref, expected_revision: revision, by: "artist", format, text: text2, name: name2 } });
+      const fresh = exists ? (await query.refetch()).data || data : data;
+      const before = fresh ? fresh.revision || 0 : 0;
+      const out = await rest("/projects/script/import", { method: "POST", timeoutMs: 6e4, body: { project_ref: ref, expected_revision: before, by: "artist", format, text: text2, name: name2 } });
+      if (out && out.saved && typeof out.revision === "number" && before > 0) setImportUndo({ before, after: out.revision });
+      return out;
     });
   };
+  const importScript = async (from = "file") => {
+    setAsk(null);
+    const file = await chooseScriptFile();
+    if (!file) return;
+    const fresh = exists ? (await query.refetch()).data || data : data;
+    const scenes = fresh && fresh.exists ? sceneRows(fresh).filter((row2) => !row2.omitted).length : 0;
+    if (scenes > 0) {
+      setAsk({ file, name: nameOf3(file), scenes, from });
+      return;
+    }
+    await importFile(file);
+  };
+  const importAsk = ask ? { from: ask.from, el: jsxs87("div", {
+    className: "fss2-pop fss2-ask",
+    role: "alertdialog",
+    "aria-modal": "true",
+    "aria-label": `Replace ${ask.scenes} ${ask.scenes === 1 ? "scene" : "scenes"}?`,
+    "data-testid": "script-import-ask",
+    "data-scenes": ask.scenes,
+    onKeyDown: (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setAsk(null);
+      }
+    },
+    children: [
+      jsx106("div", { className: "fss2-ask-t", children: `Replace ${ask.scenes} ${ask.scenes === 1 ? "scene" : "scenes"}?` }, "t"),
+      jsx106("div", { className: "fss2-ask-m", title: ask.name, children: ask.name }, "m"),
+      jsxs87("div", { className: "fss2-ask-b", children: [
+        jsx106("button", { type: "button", className: "fw-btn fw-btn-ghost", "data-testid": "script-import-cancel", autoFocus: true, onClick: () => setAsk(null), children: "Cancel" }, "c"),
+        jsx106("button", { type: "button", className: "fw-btn fw-btn-ghost", "data-testid": "script-import-confirm", onClick: () => {
+          const file = ask.file;
+          setAsk(null);
+          void importFile(file);
+        }, children: "Replace" }, "r")
+      ] }, "b")
+    ]
+  }, "ask"), cancel: () => setAsk(null) } : null;
   let body2;
   if (!project) {
     body2 = jsxs87("div", { className: "fss2-empty", "data-testid": "script-empty", "data-why": "no-project", children: [
@@ -100075,7 +100180,7 @@ function ScriptPage({ project, query, onOpenProject = null, visible = true }) {
       ] }, "a")
     ] }, "ns");
   } else {
-    body2 = jsx106(ScriptWrite, { project, projectRef: ref, query, title: scriptTitle(data), titleSource: scriptTitleSource(data), visible, onError: setError, onImport: () => void importScript(), importing: busy2 === "import" }, "w:" + ref.project_id);
+    body2 = jsx106(ScriptWrite, { project, projectRef: ref, query, title: scriptTitle(data), titleSource: scriptTitleSource(data), visible, onError: setError, onImport: (from) => void importScript(from), importing: busy2 === "import", importAsk, importUndo }, "w:" + ref.project_id);
   }
   return jsxs87("section", { className: "fss2", "data-testid": "script-shell", "data-state": !project ? "no_project" : !data ? "loading" : exists ? "ready" : "none", children: [
     jsx106("style", { children: SCRIPT_PAGE_CSS + SCRIPT_WRITE_CSS2 }, "css"),
@@ -100642,6 +100747,7 @@ function mediaThumbRequest(path, done) {
     if (!job.started) mediaThumbLine.waiting = mediaThumbLine.waiting.filter((entry2) => entry2 !== job);
   };
 }
+var brokenThumbs = /* @__PURE__ */ new Set();
 function MediaFileThumb({ file }) {
   const ref = useRef(null);
   const path = (file.kind === "image" || file.kind === "video") && typeof file.path === "string" ? file.path : "";
@@ -100667,7 +100773,24 @@ function MediaFileThumb({ file }) {
     if (!path || !near2) return void 0;
     return mediaThumbRequest(path, (url) => setSrc(url));
   }, [path, near2]);
-  if (src) return jsx110("img", { ref, className: "fsp-m-img", src, alt: file.label, draggable: false, "data-near": "true", "data-poster": file.kind === "video" ? "true" : void 0 });
+  const [broken, setBroken] = useState(false);
+  useEffect(() => {
+    setBroken(Boolean(src && brokenThumbs.has(src)));
+  }, [src]);
+  if (src && !broken) return jsx110("img", {
+    ref,
+    className: "fsp-m-img",
+    src,
+    alt: file.label,
+    draggable: false,
+    "data-near": "true",
+    "data-poster": file.kind === "video" ? "true" : void 0,
+    onError: () => {
+      brokenThumbs.add(src);
+      setBroken(true);
+    }
+  });
+  if (src && broken) return jsx110("span", { ref, className: "fsp-thumb-empty", "data-testid": "media-file-unreadable", "data-near": "true", "aria-label": file.label, children: "Unavailable" });
   if (file.kind === "video" && !src) return jsx110("span", { ref, className: "fsp-thumb-empty", "data-testid": "media-file-clipglyph", "aria-hidden": "true", children: jsx110("svg", { viewBox: "0 0 24 24", width: 24, height: 24, fill: "none", stroke: "currentColor", strokeWidth: 1.5, children: [jsx110("rect", { x: 3.5, y: 6.5, width: 12, height: 11, rx: 1 }, "r"), jsx110("path", { d: "M15.5 10.5l5-3v9l-5-3" }, "p")] }) });
   return jsx110("span", { ref, className: "fsp-thumb-empty", "data-near": near2 ? "true" : "false", children: src === "" ? "Unavailable" : near2 ? "…" : "" });
 }
@@ -100984,7 +101107,7 @@ function ConfirmDelete({ at: at2, cut: cut2, onYes, onClose }) {
   }, []);
   return jsxs92("div", { ref, className: "fmc-menu fmc-confirm", role: "alertdialog", "aria-label": `Delete ${cut2.name}`, "data-testid": "media-cut-delete", style: { left: pos2.x, top: pos2.y }, children: [
     jsx111("p", { className: "fmc-confirm-t", children: `Delete ${cut2.name}?` }, "t"),
-    jsx111("p", { className: "fmc-confirm-m", children: `${lengthText(cut2)} · ${cut2.clips} clip${cut2.clips === 1 ? "" : "s"} · Undo with Ctrl+Z in Cut` }, "m"),
+    jsx111("p", { className: "fmc-confirm-m", children: `${lengthText(cut2)} · ${cut2.clips} clip${cut2.clips === 1 ? "" : "s"} · Undo with ${modChord("Z")} in Cut` }, "m"),
     jsxs92("div", { className: "fmc-confirm-b", children: [
       jsx111("button", { type: "button", className: "fmc-btn fw-b", "data-testid": "media-cut-delete-no", onClick: onClose, children: "Cancel" }, "n"),
       jsx111("button", { type: "button", className: "fmc-btn fw-b is-danger", "data-testid": "media-cut-delete-yes", onClick: () => {
@@ -104695,15 +104818,15 @@ function MusicOverview({ duration, peaks, bucketsPerSecond, viewStart, viewEnd, 
   };
   useEffect(() => {
     const canvas2 = canvasRef.current;
-    const host7 = canvas2?.parentElement;
-    if (!host7) return void 0;
+    const host8 = canvas2?.parentElement;
+    if (!host8) return void 0;
     const resize2 = () => {
-      const box = host7.getBoundingClientRect();
+      const box = host8.getBoundingClientRect();
       setSize({ width: Math.max(1, Math.round(box.width)), height: 56 });
     };
     resize2();
     const observer = new ResizeObserver(resize2);
-    observer.observe(host7);
+    observer.observe(host8);
     return () => observer.disconnect();
   }, []);
   useEffect(() => {
@@ -107618,12 +107741,12 @@ function toRgba(text2) {
   }
   return "";
 }
-function resolvePalette(host7) {
-  if (!host7 || typeof getComputedStyle !== "function" || !host7.ownerDocument) return { ...TL_COLORS };
-  const probe2 = host7.ownerDocument.createElement("span");
+function resolvePalette(host8) {
+  if (!host8 || typeof getComputedStyle !== "function" || !host8.ownerDocument) return { ...TL_COLORS };
+  const probe2 = host8.ownerDocument.createElement("span");
   probe2.setAttribute("aria-hidden", "true");
   probe2.style.cssText = "position:absolute;width:0;height:0;overflow:hidden;visibility:hidden;pointer-events:none";
-  host7.appendChild(probe2);
+  host8.appendChild(probe2);
   const out = {};
   try {
     for (const [key, expr] of Object.entries(TL_TOKENS)) {
@@ -108540,7 +108663,7 @@ function CutSheet({ project, doc: doc2, model, state, edit, playhead, onSeek, on
       jsx129("ul", { className: "tlc-list tlc-revs", "data-testid": "tl-revisions", children: revisions === null ? jsx129("li", { className: "tlc-li tld-val", children: "Reading…" }, "r") : revisions.slice(0, 50).map((r) => jsxs109("li", { className: "tlc-li", "data-revision": String(r.revision), children: [
         jsx129("span", { className: "tlc-rev", children: String(r.revision) }, "n"),
         jsx129("span", { className: "tld-val tlc-grow", title: `${r.label || "Edit"} · ${r.by === "hermes" ? "Hermes" : "You"} · ${r.updated_at || ""}`, children: `${r.label || "Edit"} · ${r.by === "hermes" ? "Hermes" : "You"}` }, "l"),
-        r.revision === (doc2 ? doc2.revision : 0) ? jsx129("span", { className: "tld-val", children: "On screen" }, "c") : jsx129(FwButton, { variant: "ghost", "data-testid": "tl-revision-restore", title: "Bring this version back (Ctrl+Z undoes it)", onClick: () => void edit.restoreTo(r.revision, `Back to version ${r.revision}${r.label ? ": " + r.label : ""}`), children: "Restore" }, "b")
+        r.revision === (doc2 ? doc2.revision : 0) ? jsx129("span", { className: "tld-val", children: "On screen" }, "c") : jsx129(FwButton, { variant: "ghost", "data-testid": "tl-revision-restore", title: `Bring this version back (${modChord("Z")} undoes it)`, onClick: () => void edit.restoreTo(r.revision, `Back to version ${r.revision}${r.label ? ": " + r.label : ""}`), children: "Restore" }, "b")
       ] }, r.revision)) }, "l")
     ] }, "rv")
   ] });
@@ -112450,7 +112573,7 @@ function useTimelineEditSession(project, doc2, refetch) {
       if (!h.stack.length || !(h.own.has(current2.revision) || h.stack[h.stack.length - 1] === current2.revision)) h.stack = [current2.revision];
       h.stack.push(written.revision);
       h.redo = [];
-      setNote({ kind: "info", text: `${label2} · Ctrl+Z undoes` });
+      setNote({ kind: "info", text: `${label2} · ${modChord("Z")} undoes` });
     });
   });
   const undo2 = () => enqueue(async (current2) => {
@@ -113909,7 +114032,7 @@ function continueNote(model, request, results) {
   const last2 = Array.isArray(results) && results.length ? results[results.length - 1] : null;
   const joins = last2 && Array.isArray(last2.joins) ? last2.joins : [];
   const at2 = joins.map((f2) => formatTimecode(model.startTc + f2, model.rate)).join(" and ");
-  return `Placed ${RELATION_WORD[request.relation]} its parent${at2 ? ` · joins at ${at2}` : ""} · Ctrl+Z undoes`;
+  return `Placed ${RELATION_WORD[request.relation]} its parent${at2 ? ` · joins at ${at2}` : ""} · ${modChord("Z")} undoes`;
 }
 
 // desktop/film-suite/src/timeline/view/timeline-toolrow.js
@@ -114590,7 +114713,7 @@ function HistoryTab2({ rows, doc: doc2, edit }) {
       revision: r.revision,
       now,
       tip: `${label2} · Version ${r.revision}`,
-      action: now ? null : { word: "Restore", title: "Bring this version back (Ctrl+Z undoes it)", testid: "tl-insp-restore", onClick: () => void edit.restoreTo(r.revision, `Back to version ${r.revision}${r.label ? ": " + r.label : ""}`) }
+      action: now ? null : { word: "Restore", title: `Bring this version back (${modChord("Z")} undoes it)`, testid: "tl-insp-restore", onClick: () => void edit.restoreTo(r.revision, `Back to version ${r.revision}${r.label ? ": " + r.label : ""}`) }
     }, r.revision);
   }) });
 }
@@ -115492,7 +115615,7 @@ function FilmSuiteTimelineModule({ visible = true, project = null, ownerScope = 
   const addSound = (paths, { role, track, at: at2 }) => edit.external((rev) => addSoundFiles(project, { paths, role, track, at: at2, expectedRevision: rev }).then((out) => {
     const refused = out.errors && out.errors.length ? ` · ${out.errors.length} not added: ${out.errors[0].message}` : "";
     if (!out.placed) throw Object.assign(new Error(`Nothing was added: ${out.errors && out.errors[0] && out.errors[0].message || "no sound file"}`), { code: "invalid_op" });
-    edit.say(`${out.placed.label} · Ctrl+Z undoes${refused}`);
+    edit.say(`${out.placed.label} · ${modChord("Z")} undoes${refused}`);
     if (out.placed.created && out.placed.created.length) setSelection({ kind: "clips", ids: out.placed.created });
     return out.placed;
   }), `Add sound`);
@@ -117237,18 +117360,18 @@ function AudioEditInspector({ tab: tab2, onTab, parts, values = {}, track = "", 
   const asideRef = useRef(null);
   const insp = useAudioInspWidth(asideRef);
   useLayoutEffect(() => {
-    const host7 = asideRef.current && asideRef.current.closest(".fim.fmu");
-    if (!host7) return void 0;
+    const host8 = asideRef.current && asideRef.current.closest(".fim.fmu");
+    if (!host8) return void 0;
     if (insp.on) {
-      host7.style.setProperty("--aei-w", insp.shown + "px");
-      host7.setAttribute("data-aei", "docked");
+      host8.style.setProperty("--aei-w", insp.shown + "px");
+      host8.setAttribute("data-aei", "docked");
     } else {
-      host7.style.removeProperty("--aei-w");
-      host7.removeAttribute("data-aei");
+      host8.style.removeProperty("--aei-w");
+      host8.removeAttribute("data-aei");
     }
     return () => {
-      host7.style.removeProperty("--aei-w");
-      host7.removeAttribute("data-aei");
+      host8.style.removeProperty("--aei-w");
+      host8.removeAttribute("data-aei");
     };
   }, [insp.on, insp.shown]);
   $audioEditRef.current = projectRef;
@@ -119075,7 +119198,7 @@ function TakeLane({ take, index, scale, ownerScope, selected, onSelect, onPlay }
       }
     },
     children: [
-      jsxs126("span", { className: "mus-head", "data-testid": "mus-take-head", title: take.error || (notesOnly ? `${name2} · ${plan.notes.length} notes` : ready ? `Take ${index + 1} · ${clock3(take.seconds)}` : stateWord[take.state]), children: [jsx146("b", { children: name2 }), sub] }),
+      jsxs126("span", { className: "mus-head", "data-testid": "mus-take-head", title: [take.error || (notesOnly ? `${name2} · ${plan.notes.length} notes` : ready ? `Take ${index + 1} · ${clock3(take.seconds)}` : stateWord[take.state]), ...(take.warnings || []).map((w) => w.message)].filter(Boolean).join(" · "), children: [jsx146("b", { children: name2 }), sub] }),
       jsxs126("span", { className: "mus-lane", children: [
         ready && take.studio_job_id ? jsx146("span", { style: { position: "absolute", left: 0, top: 0, bottom: 0, width: `${width}%` }, children: jsx146(SoundWave, { source: { owner_scope: ownerScope, studio_job_id: take.studio_job_id }, testid: "mus-take-wave" }) }) : null,
         ...dashes,
@@ -119128,10 +119251,22 @@ var clockShort = (v) => {
   const t2 = Math.max(0, Math.round(Number(v) || 0));
   return `${Math.floor(t2 / 60)}:${String(t2 % 60).padStart(2, "0")}`;
 };
-function ControlRow({ control, values, onChange, onReset, missing = false }) {
+var BAR_SECONDS = (bars, bpm) => Number(bars) * 4 * 60 / Number(bpm);
+function trainedNote(control, values, controls) {
+  const value = controlValue(control, values);
+  if (control.trained_min != null && (value < control.trained_min || value > control.trained_max)) return `${value} is outside the trained ${control.trained_min}–${control.trained_max} ${UNIT[control.id] || ""}`.trim();
+  if (control.trained_seconds != null) {
+    const bpm = controls.find((c) => c.id === "bpm");
+    const seconds2 = bpm ? BAR_SECONDS(value, controlValue(bpm, values)) : 0;
+    if (seconds2 > control.trained_seconds + 1e-6) return `${value} bars last ${(Math.floor(seconds2 * 10) / 10).toFixed(1)} s, longer than the trained ${control.trained_seconds} s`;
+  }
+  return "";
+}
+function ControlRow({ control, values, onChange, onReset, missing = false, controls = [] }) {
   const value = controlValue(control, values);
   const id = `mus-in-${control.id}`;
-  const label2 = jsx146("label", { htmlFor: id, title: `${control.label} · double-click resets`, onDoubleClick: () => onReset(control.id), children: control.label });
+  const fact = [trainedNote(control, values, controls), control.hint || ""].filter(Boolean).join(" · ");
+  const label2 = jsx146("label", { htmlFor: id, title: [`${control.label} · double-click resets`, fact].filter(Boolean).join(" · "), onDoubleClick: () => onReset(control.id), children: control.label });
   let field;
   if (control.kind === "boolean") {
     field = jsx146(FwSeg, { label: control.label, value: value ? "on" : "off", onChange: (v) => onChange(control.id, v === "on"), options: [{ id: "off", label: "Off" }, { id: "on", label: "On" }] });
@@ -119403,7 +119538,7 @@ function MusicCreate({ target, modelRow, projectRef, ownerScope, lead, visible =
     fixed: true,
     testid: `mus-sec-${id}`,
     value: id === "sound" ? list.slice(0, 1).map((c) => String(controlValue(c, values) || "")).filter(Boolean).join("") : headline(list),
-    children: jsx146("div", { className: "mus-sec-b", "data-missing": list.includes(missing) ? "true" : void 0, children: list.map((c) => jsx146(ControlRow, { control: c, values, onChange: setValue, onReset: resetValue, missing: missing === c }, c.id)) })
+    children: jsx146("div", { className: "mus-sec-b", "data-missing": list.includes(missing) ? "true" : void 0, children: list.map((c) => jsx146(ControlRow, { control: c, values, onChange: setValue, onReset: resetValue, missing: missing === c, controls }, c.id)) })
   }, id) : null;
   const stagesSection = stagesCtl ? jsx146(FwSection, {
     id: "stages",
@@ -119812,7 +119947,7 @@ function ControlField({ control, values, onChange, onReset }) {
     return jsxs128("label", { className: "aud-check", ...reset, children: [jsx148("input", { type: "checkbox", checked: Boolean(value), "data-testid": `aud-ctl-${control.id}`, onChange: (e) => onChange(control.id, e.target.checked) }), control.label] });
   }
   if (control.kind === "choice" && Array.isArray(control.options)) {
-    return jsxs128("div", { className: "aud-f", children: [jsx148("label", { ...reset, children: control.label }), jsx148(FwSelect, { label: control.label, value: String(value), options: control.options.map(String), onChange: (v) => onChange(control.id, v) })] });
+    return jsxs128("div", { className: "aud-f aud-f-row", "data-testid": `aud-ctl-${control.id}`, children: [jsx148("label", { ...reset, children: control.label }), jsx148(FwSelect, { label: control.label, value: String(value), options: control.options.map(String), labels: { "": "Any" }, onChange: (v) => onChange(control.id, v) })] });
   }
   return jsxs128("div", { className: "aud-f aud-f-row", children: [
     jsx148("label", { htmlFor: `aud-ctl-${control.id}`, ...reset, children: control.label }),
@@ -120347,7 +120482,7 @@ function AudioCreate({ visible = true, project: given = null, lead = null }) {
     drop2
   ] });
   const sections = target ? Object.keys(SECTION_TITLE).filter((id) => target.controls.some((c) => c.section === id)) : [];
-  const summary = (id) => target.controls.filter((c) => c.section === id).slice(0, 2).map((c) => {
+  const summary = (id) => target.controls.filter((c) => c.section === id && !(c.kind === "choice" && controlValue2(c, values) === "")).slice(0, 2).map((c) => {
     const v = controlValue2(c, values);
     return c.kind === "boolean" ? `${c.label} ${v ? "on" : "off"}` : `${c.label} ${v}`;
   }).join(" · ");
@@ -122539,8 +122674,8 @@ function useRulerLabelWidth(boxRef) {
     probe2.className = "fsh-kf-rl";
     probe2.style.visibility = "hidden";
     probe2.textContent = "00:00:00:00";
-    const host7 = box.querySelector('[data-testid="fsh-kf-ruler"]') || box;
-    host7.appendChild(probe2);
+    const host8 = box.querySelector('[data-testid="fsh-kf-ruler"]') || box;
+    host8.appendChild(probe2);
     const m = Math.ceil(probe2.getBoundingClientRect().width);
     probe2.remove();
     if (m > 0 && m !== w) setW(m);
@@ -122827,17 +122962,35 @@ function KeyframeEditor({
     }
     return picked;
   };
+  const takePicked = async (paths) => {
+    const roots = ($shootMediaFolders.get() || {}).roots || [];
+    const known = (path) => isUrl(path) || roots.some((root) => mediaPathInRoot(path, root));
+    const strange = paths.filter((path) => !known(path));
+    if (!strange.length || chain || !/^film_owner:prj_/.test(String(ownerScope || ""))) return paths;
+    setBusy(true);
+    try {
+      const { paths: staged, labels, error } = await stagePickedPictures(strange, ownerScope);
+      for (const path of staged) rememberAssetName(path, labels[path]);
+      if (error && !staged.length) refuse4(error);
+      const map = new Map(strange.map((path, i2) => [path, staged[i2]]));
+      return error && staged.length < strange.length ? [...paths.filter(known), ...staged] : paths.map((path) => known(path) ? path : map.get(path)).filter(Boolean);
+    } finally {
+      setBusy(false);
+    }
+  };
   const browseInto = async (id) => {
     const picked = await pickOne("Choose a keyframe picture");
-    if (picked) {
-      update(id, "source", picked);
+    const [taken] = picked ? await takePicked([picked]) : [];
+    if (taken) {
+      update(id, "source", taken);
       haptic8("selection");
     }
   };
-  const browseMany = async () => absorbPaths(await pickPaths({ filters: IMAGE_FILTERS, multiple: true, max: MAX_KEYFRAMES, title: "Choose keyframe pictures" }));
+  const browseMany = async () => absorbPaths(await takePicked(await pickPaths({ filters: IMAGE_FILTERS, multiple: true, max: MAX_KEYFRAMES, title: "Choose keyframe pictures" })));
   const browseAt = async (frame) => {
     const picked = await pickOne("Choose a keyframe picture");
-    if (picked) absorbPaths([picked], { frame });
+    const taken = picked ? await takePicked([picked]) : [];
+    if (taken.length) absorbPaths(taken, { frame });
   };
   const fromBin = async (event, frame, onto) => {
     let data = null;
@@ -125459,8 +125612,8 @@ function FshReview({ wb, job }) {
 function useStageRect(anchor2) {
   const [rect, setRect] = useState(null);
   useEffect(() => {
-    const host7 = anchor2.current && anchor2.current.closest('[data-slot="shoot"]');
-    const stage = host7 && host7.querySelector('[data-testid="fsh-canvas"]');
+    const host8 = anchor2.current && anchor2.current.closest('[data-slot="shoot"]');
+    const stage = host8 && host8.querySelector('[data-testid="fsh-canvas"]');
     const read2 = () => {
       const r = (stage || document.body).getBoundingClientRect();
       setRect({ left: r.left, top: r.top, width: r.width, height: r.height });
@@ -125962,12 +126115,12 @@ function useScrubMarks(marks2, duration, rowRef) {
     const scope = shootScope(rowRef.current);
     const scrub = scope && scope.querySelector('[data-testid="fsh-scrub"]');
     if (!scrub || !marks2.length || !(duration > 0)) return void 0;
-    const host7 = scrub.parentElement;
+    const host8 = scrub.parentElement;
     const layer2 = document.createElement("div");
     layer2.className = "fsh-sync-marks";
     layer2.dataset.testid = "fsh-sync-marks";
     const place2 = () => {
-      const a = scrub.getBoundingClientRect(), b = host7.getBoundingClientRect();
+      const a = scrub.getBoundingClientRect(), b = host8.getBoundingClientRect();
       Object.assign(layer2.style, { left: `${a.left - b.left}px`, top: `${a.top - b.top - 6}px`, width: `${a.width}px` });
     };
     for (const m of marks2) {
@@ -125990,11 +126143,11 @@ function useScrubMarks(marks2, duration, rowRef) {
       });
       layer2.appendChild(el);
     }
-    if (getComputedStyle(host7).position === "static") host7.style.position = "relative";
-    host7.appendChild(layer2);
+    if (getComputedStyle(host8).position === "static") host8.style.position = "relative";
+    host8.appendChild(layer2);
     place2();
     const ro = typeof ResizeObserver === "function" ? new ResizeObserver(place2) : null;
-    if (ro) ro.observe(host7);
+    if (ro) ro.observe(host8);
     return () => {
       if (ro) ro.disconnect();
       layer2.remove();
@@ -127546,6 +127699,7 @@ var SOUND_LINES = {
 };
 var SUBJECTS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 var secText = (value) => value === null || value === void 0 ? "" : String(value);
+var SOUND_REFUSAL_MS = 2e3;
 var lenText = (value) => Number.isFinite(Number(value)) ? `${(Math.round(Number(value) * 10) / 10).toFixed(1)} s` : "";
 var endText = (seconds2) => Number.isFinite(Number(seconds2)) && Number(seconds2) > 0 ? (Math.round(Number(seconds2) * 10) / 10).toFixed(1) : "";
 function SoundSpan({ item, label: label2, fileSeconds, onChange }) {
@@ -127593,6 +127747,14 @@ function SoundRow({ wb, item, index, measured, dupVoice, onRole, onSpan, onRemov
 function FshSoundSection({ wb, target }) {
   const [over, setOver] = useState("");
   const [typed, setTyped] = useState("");
+  const [refused, setRefused] = useState(null);
+  const refusedTimer = useRef(0);
+  useEffect(() => () => clearTimeout(refusedTimer.current), []);
+  const refuseAt = (zone, text2) => {
+    clearTimeout(refusedTimer.current);
+    setRefused({ zone, text: text2, at: Date.now() });
+    refusedTimer.current = setTimeout(() => setRefused(null), SOUND_REFUSAL_MS);
+  };
   const refs = soundOffered(target, "reference_audios");
   const clipSound = soundOffered(target, "reference_video_sound");
   const track = soundOffered(target, "sound_track");
@@ -127655,9 +127817,15 @@ function FshSoundSection({ wb, target }) {
       setOver("");
       const paths = pathsFromDrop(event);
       if (!paths.length) {
-        wb.note(droppedFiles(event).length ? DROP_NO_PATH : "No readable file in the drop", "warn");
+        refuseAt(zone, droppedFiles(event).length ? DROP_NO_PATH : "No readable file in the drop");
         return;
       }
+      const wrong = paths.map(soundWrongKind).find(Boolean);
+      if (wrong) {
+        refuseAt(zone, wrong);
+        return;
+      }
+      setRefused(null);
       void place2(paths);
     }
   });
@@ -127722,7 +127890,8 @@ function FshSoundSection({ wb, target }) {
         }
       }, "i"),
       typed.trim() ? jsx171("button", { type: "button", className: "fw-btn fw-btn-secondary fss-add", "data-testid": "fsh-sound-path-add", onClick: addTyped, children: "Use" }, "u") : null
-    ] }, "p")
+    ] }, "p"),
+    refused && refused.zone === "refs" ? jsx171("p", { className: "fss-refused", role: "status", "data-testid": "fsh-sound-refused", "data-zone": "refs", title: refused.text, children: refused.text }, "refused" + refused.at) : null
   ] }, "refs") : null;
   const clipsBlock = clipSound && clips.length ? jsxs150("div", { className: "fss-block", "data-testid": "fsh-sound-clips", children: [
     jsx171("div", { className: "fss-head", children: jsx171("span", { className: "fsh-slot-name fss-t", title: SOUND_LINES.clip, children: "Clip sound" }) }, "h"),
@@ -127769,7 +127938,8 @@ function FshSoundSection({ wb, target }) {
       jsx171("span", { className: "fss-len", "data-testid": "fsh-sound-len", title: "Length that plays (cut to the shot)", children: measuredOf("sound_track/0") ? lenText(measuredOf("sound_track/0").used_seconds) : "" }, "l"),
       jsx171("button", { type: "button", className: "fsm-x fss-x", "data-testid": "fsh-sound-track-remove", title: "Remove the sound track", "aria-label": "Remove the sound track", onClick: () => wb.setCatalogSound((current2) => ({ ...current2, track: null })), children: "✕" }, "x"),
       jsx171("div", { className: "fss-ctl", children: jsx171(SoundSpan, { item: trackItem, label: "the sound track", fileSeconds: measuredOf("sound_track/0") && measuredOf("sound_track/0").seconds, onChange: (change) => wb.setCatalogSound((current2) => ({ ...current2, track: { ...current2.track, ...change } })) }) }, "c")
-    ] }, "it") : null
+    ] }, "it") : null,
+    refused && refused.zone === "track" ? jsx171("p", { className: "fss-refused", role: "status", "data-testid": "fsh-sound-refused", "data-zone": "track", title: refused.text, children: refused.text }, "refused" + refused.at) : null
   ] }, "track") : null;
   return jsxs150("section", { className: "fw-sec fsh-sound", "data-blk": "sound", "data-testid": "fsh-sound", children: [
     jsxs150("div", { className: "fw-sec-h is-fixed", children: [
@@ -127796,6 +127966,8 @@ var FSS_CSS = `
 .fss-total{flex:none;color:var(--fw-t3);font-variant-numeric:tabular-nums;white-space:nowrap}
 .fss-total.is-over,.fss-warn,.fss-problem{color:var(--fw-err)}
 .fss-problem{margin:0}
+/* VID-175: a refused drop, at the part it was dropped on (the keyframe track's refusal look: hover ground, strong line). */
+.fss-refused{margin:0;padding:3px 8px;border-radius:var(--fw-r1);background:var(--fw-hover);box-shadow:0 0 0 1px var(--fw-line-strong);color:var(--fw-t1);min-width:0;overflow-wrap:anywhere}
 .fss-add{flex:none;padding:0 8px;font-weight:400}
 .fss-list{display:grid;gap:6px}
 .fss-row{display:grid;grid-template-columns:14px minmax(0,1fr) auto auto;align-items:center;gap:4px 8px;min-width:0;padding:4px 4px 4px 8px;border-radius:var(--fw-r1);background:var(--fw-s0);box-shadow:0 0 0 1px var(--fw-line-2)}
@@ -129449,17 +129621,17 @@ function ProjectSettingsSheet({ project, anchorRef, onClose }) {
   }, [read2 === null]);
   useLayoutEffect(() => {
     const scrim = scrimRef.current;
-    const host7 = scrim && scrim.closest('[data-testid="film-suite-page"]');
+    const host8 = scrim && scrim.closest('[data-testid="film-suite-page"]');
     const box = scrim && scrim.offsetParent;
-    if (!scrim || !host7 || !box) return void 0;
+    if (!scrim || !host8 || !box) return void 0;
     const place2 = () => {
-      const h = host7.getBoundingClientRect(), o = box.getBoundingClientRect();
+      const h = host8.getBoundingClientRect(), o = box.getBoundingClientRect();
       Object.assign(scrim.style, { left: h.left - o.left - box.clientLeft + "px", top: h.top - o.top - box.clientTop + "px", width: h.width + "px", height: h.height + "px" });
     };
     place2();
     if (typeof ResizeObserver === "undefined") return void 0;
     const ro = new ResizeObserver(place2);
-    ro.observe(host7);
+    ro.observe(host8);
     return () => ro.disconnect();
   }, []);
   const write2 = async (folder) => {
@@ -130618,9 +130790,361 @@ function FilmSuiteStatusItem() {
   });
 }
 
+// desktop/film-suite/src/settings/engine-settings-page.js
+import { Button as Button13, ConfirmDialog, Input as Input6, ListRow, host as host6 } from "@hermes/plugin-sdk";
+import { jsx as jsx179, jsxs as jsxs158 } from "react/jsx-runtime";
+var SETTINGS_EVENT = "plugin.film-suite.settings.changed";
+var LOCAL_PORTS = [8188, 8e3];
+var SIDE_BUTTON = { minWidth: "6rem" };
+var FAILED_COLOR = "var(--ui-red)";
+function isThisMachine(value) {
+  const text2 = String(value || "").trim();
+  if (!text2) return true;
+  try {
+    const host8 = new URL(text2).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    return host8 === "localhost" || host8 === "::1" || /^127(\.\d{1,3}){3}$/.test(host8);
+  } catch {
+    return true;
+  }
+}
+function restFailure(error) {
+  const text2 = String(error && error.message || error || "");
+  const body2 = text2.replace(/^\d{3}:\s*/, "");
+  try {
+    const parsed = JSON.parse(body2);
+    const message = parsed && parsed.error && parsed.error.message;
+    if (message) return String(message);
+  } catch {
+  }
+  return "Continuo did not answer";
+}
+function noAnswer(tried) {
+  const list = (tried || []).filter(Boolean);
+  if (!list.length) return "";
+  const host8 = (label2) => label2.slice(0, label2.lastIndexOf(":"));
+  return "No answer at " + list.map((label2, i2) => i2 && host8(label2) === host8(list[0]) ? label2.slice(label2.lastIndexOf(":")) : label2).join(" or ");
+}
+function addressSegments(field, shown = "") {
+  if (!field) return [];
+  if (field.source === "none") return [noAnswer(field.tried) || field.reason || ""];
+  if (!field.address) return [field.reason || ""];
+  const same3 = String(shown || "").trim().replace(/^[a-z]+:\/\//i, "").replace(/\/$/, "").toLowerCase() === field.address;
+  return [same3 ? "" : field.address, field.version ? `ComfyUI ${field.version}` : field.reachable === false ? "no answer" : ""];
+}
+var FOLDERS = {
+  comfy_root: { title: "ComfyUI folder", miss: "no models folder" },
+  comfy_models: { title: "Models folder", miss: "no model folders" }
+};
+var PLACEHOLDER = "Auto";
+var samePath = (a, b) => {
+  const n = (v) => String(v || "").trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  return Boolean(n(a)) && n(a) === n(b);
+};
+function folderSegments(key, field, shown = "") {
+  if (!field) return [];
+  const spec = FOLDERS[key];
+  if (!field.folder) return [field.reason || ""];
+  if (field.reason && /network/.test(field.reason)) return [field.reason];
+  const state = field.looks_like ? [] : [field.exists ? spec.miss : "not found"];
+  return [samePath(shown, field.folder) ? "" : field.folder, ...state];
+}
+function quietLine(testid, segments, failed2 = false) {
+  const parts = segments.filter(Boolean);
+  if (!parts.length) return void 0;
+  return jsx179("span", {
+    "data-testid": testid,
+    "data-failed": failed2 ? "true" : void 0,
+    // a long folder path fills the line instead of leaving "In use:" alone; a failed Test colours the fact it confirms
+    style: failed2 ? { overflowWrap: "anywhere", color: FAILED_COLOR } : { overflowWrap: "anywhere" },
+    children: parts.flatMap((text2, i2) => i2 === 0 ? [text2] : [" ", jsx179("span", { style: { whiteSpace: "nowrap" }, children: "· " + text2 }, i2)])
+  });
+}
+function saveButton(testid, why, onClick) {
+  return jsx179(Button13, {
+    type: "button",
+    variant: why ? "outline" : "default",
+    "data-testid": testid,
+    disabled: Boolean(why),
+    style: why ? { opacity: 0.5 } : void 0,
+    title: why ? `Save · ${why}` : "Save",
+    onClick,
+    children: "Save"
+  });
+}
+function resultLine(testid, result) {
+  return jsx179("div", {
+    "data-testid": testid,
+    "data-ok": result ? String(result.ok) : "",
+    "aria-live": "polite",
+    // No reserved line while it says nothing: the control stays level with its label and description.
+    style: result && result.text ? { marginTop: 4, fontSize: "var(--conversation-caption-font-size)", color: result.ok ? "var(--ui-text-secondary)" : FAILED_COLOR } : void 0,
+    children: result ? result.text : ""
+  });
+}
+function useDraft(field, epoch) {
+  const [draft, setDraft] = useState("");
+  const touched = useRef(false);
+  useEffect(() => {
+    touched.current = false;
+  }, [epoch]);
+  useEffect(() => {
+    if (field && !touched.current) setDraft(field.value || "");
+  }, [field, epoch]);
+  const edit = (value) => {
+    touched.current = true;
+    setDraft(value);
+  };
+  return [draft, edit, () => {
+    touched.current = false;
+  }];
+}
+function AddressRow({ rest: rest2, field, epoch, onSettings }) {
+  const [draft, edit, release2] = useDraft(field, epoch);
+  const [result, setResult] = useState(null);
+  const [busy2, setBusy] = useState("");
+  const [confirm, setConfirm] = useState(false);
+  useEffect(() => {
+    setResult(null);
+  }, [epoch]);
+  const locked2 = Boolean(field && field.variable_set);
+  const saved = field && field.value || "";
+  const value = draft.trim();
+  const unchanged = value === saved;
+  const missed = Boolean(result && !result.ok && !result.text);
+  const answers = (answer, shown) => ({ ok: true, text: answer.address === shown ? "" : [answer.address, answer.version ? `ComfyUI ${answer.version}` : ""].filter(Boolean).join(" · ") });
+  const miss = (reason) => String(reason || "No answer").replace(/^No ComfyUI answers at /, "No answer at ");
+  const test = async () => {
+    setBusy("test");
+    try {
+      if (!value) {
+        let answer2 = null;
+        for (const port of LOCAL_PORTS) {
+          answer2 = await rest2("/settings/test", { method: "POST", body: { comfy_url: `http://127.0.0.1:${port}` } });
+          if (answer2 && answer2.ok) break;
+        }
+        const data = await rest2("/settings");
+        const now = data && data.settings && data.settings.comfy_url;
+        if (now) onSettings(data.settings);
+        if (answer2 && answer2.ok) setResult(answers(answer2, now && now.reachable ? now.address : null));
+        else setResult({ ok: false, text: now && now.source === "none" ? "" : noAnswer(LOCAL_PORTS.map((port) => `127.0.0.1:${port}`)) });
+        return;
+      }
+      const answer = await rest2("/settings/test", { method: "POST", body: { comfy_url: value } });
+      setResult(answer && answer.ok ? answers(answer, field && field.reachable ? field.address : null) : { ok: false, text: miss(answer && answer.reason) });
+    } catch (error) {
+      setResult({ ok: false, text: restFailure(error) });
+    } finally {
+      setBusy("");
+    }
+  };
+  const save = async () => {
+    setBusy("save");
+    try {
+      const data = await rest2("/settings", { method: "PUT", body: { comfy_url: value } });
+      release2();
+      if (data && data.settings) onSettings(data.settings);
+      setResult(null);
+    } catch (error) {
+      setResult({ ok: false, text: restFailure(error) });
+    } finally {
+      setBusy("");
+    }
+  };
+  const ask = () => {
+    if (isThisMachine(value)) void save();
+    else setConfirm(true);
+  };
+  const saveWhy = locked2 ? "FILM_SUITE_COMFY_URL is set" : unchanged ? "No change" : busy2 ? "Busy" : "";
+  const testWhy = locked2 ? "FILM_SUITE_COMFY_URL is set" : busy2 ? "Busy" : "";
+  let otherHost = "";
+  try {
+    otherHost = new URL(value).host;
+  } catch {
+    otherHost = value;
+  }
+  return jsxs158("div", {
+    "data-testid": "continuo-settings-row-comfy_url",
+    children: [
+      jsx179(ListRow, {
+        title: "ComfyUI address",
+        description: quietLine("continuo-settings-source", addressSegments(field, locked2 ? field.variable_value : draft), missed),
+        action: jsxs158("div", {
+          style: { display: "flex", gap: "var(--fw-gap-sm, 6px)", alignItems: "center", width: "100%" },
+          children: [
+            jsx179(Input6, {
+              "data-testid": "continuo-settings-address",
+              "aria-label": "ComfyUI address",
+              value: locked2 ? field.variable_value || "" : draft,
+              readOnly: locked2,
+              "aria-readonly": locked2 || void 0,
+              style: locked2 ? { opacity: 0.6 } : void 0,
+              title: locked2 ? "Read-only · FILM_SUITE_COMFY_URL sets the address" : void 0,
+              placeholder: PLACEHOLDER,
+              spellCheck: false,
+              onChange: (event) => {
+                edit(event.target.value);
+                setResult(null);
+              },
+              onKeyDown: (event) => {
+                if (event.key === "Enter" && !saveWhy) ask();
+              }
+            }),
+            jsx179(Button13, { type: "button", variant: "outline", "data-testid": "continuo-settings-test", style: SIDE_BUTTON, disabled: Boolean(testWhy), title: testWhy ? `Test · ${testWhy}` : "Test", onClick: () => {
+              void test();
+            }, children: "Test" }),
+            saveButton("continuo-settings-save", saveWhy, ask)
+          ]
+        }),
+        below: resultLine("continuo-settings-result", result)
+      }),
+      jsx179(ConfirmDialog, {
+        open: confirm,
+        onClose: () => setConfirm(false),
+        onConfirm: async () => {
+          await save();
+        },
+        dismissOnConfirm: true,
+        title: `Use ${otherHost}?`,
+        description: `Continuo sends every prompt and picture of its ComfyUI work to ${otherHost}.`,
+        confirmLabel: "Use this address"
+      })
+    ]
+  });
+}
+function FolderRow({ rest: rest2, name: name2, field, epoch, onSettings }) {
+  const spec = FOLDERS[name2];
+  const [draft, edit, release2] = useDraft(field, epoch);
+  const [result, setResult] = useState(null);
+  const [busy2, setBusy] = useState("");
+  const id = (s) => `continuo-settings-${name2}-${s}`;
+  useEffect(() => {
+    setResult(null);
+  }, [epoch]);
+  const locked2 = Boolean(field && field.variable_set);
+  const value = draft.trim();
+  const unchanged = value === (field && field.value || "");
+  const variable = field && field.variable || "";
+  const save = async () => {
+    setBusy("save");
+    try {
+      const data = await rest2("/settings", { method: "PUT", body: { [name2]: value } });
+      release2();
+      if (data && data.settings) onSettings(data.settings);
+      setResult(null);
+    } catch (error) {
+      setResult({ ok: false, text: restFailure(error) });
+    } finally {
+      setBusy("");
+    }
+  };
+  const choose = async () => {
+    setBusy("choose");
+    try {
+      const path = await requestFolder();
+      if (path) {
+        edit(path);
+        setResult(null);
+      }
+    } finally {
+      setBusy("");
+    }
+  };
+  const rowRef = useRef(null);
+  const showEnd = () => {
+    const input = rowRef.current && rowRef.current.querySelector("input");
+    if (input && document.activeElement !== input) input.scrollLeft = input.scrollWidth;
+  };
+  useEffect(showEnd, [draft, field]);
+  const saveWhy = !field ? "Loading" : locked2 ? `${variable} is set` : unchanged ? "No change" : busy2 ? "Busy" : "";
+  const chooseWhy = !field ? "Loading" : locked2 ? `${variable} is set` : busy2 ? "Busy" : "";
+  return jsx179("div", {
+    "data-testid": `continuo-settings-row-${name2}`,
+    "data-source": field ? field.source : "loading",
+    ref: rowRef,
+    onBlur: showEnd,
+    children: jsx179(ListRow, {
+      title: spec.title,
+      description: quietLine(id("source"), folderSegments(name2, field, locked2 ? field.variable_value : draft)),
+      action: jsxs158("div", {
+        style: { display: "flex", gap: "var(--fw-gap-sm, 6px)", alignItems: "center", width: "100%" },
+        children: [
+          jsx179(Input6, {
+            "data-testid": id("path"),
+            "aria-label": spec.title,
+            value: locked2 ? field.variable_value || "" : draft,
+            readOnly: locked2,
+            "aria-readonly": locked2 || void 0,
+            style: locked2 ? { opacity: 0.6 } : void 0,
+            title: locked2 ? `Read-only · ${variable} sets the folder` : void 0,
+            placeholder: PLACEHOLDER,
+            spellCheck: false,
+            onChange: (event) => {
+              edit(event.target.value);
+              setResult(null);
+            },
+            onKeyDown: (event) => {
+              if (event.key === "Enter" && !saveWhy) void save();
+            }
+          }),
+          canRequestFolder() ? jsx179(Button13, { type: "button", variant: "outline", "data-testid": id("choose"), style: SIDE_BUTTON, disabled: Boolean(chooseWhy), title: chooseWhy ? `Choose · ${chooseWhy}` : "Choose a folder", onClick: () => {
+            void choose();
+          }, children: "Choose…" }) : null,
+          saveButton(id("save"), saveWhy, () => {
+            void save();
+          })
+        ]
+      }),
+      below: resultLine(id("result"), result)
+    })
+  });
+}
+function EngineSettingsPage({ rest: rest2 }) {
+  const [settings, setSettings] = useState(null);
+  const [epoch, setEpoch] = useState(0);
+  const read2 = useCallback(async () => {
+    try {
+      const data = await rest2("/settings");
+      if (data && data.settings && data.settings.comfy_url) setSettings(data.settings);
+    } catch (error) {
+      setSettings({ comfy_url: { source: "none", reason: restFailure(error), value: "" } });
+    }
+  }, [rest2]);
+  useEffect(() => {
+    void read2();
+  }, [read2]);
+  useEffect(() => {
+    const off = host6 && typeof host6.onEvent === "function" ? host6.onEvent(SETTINGS_EVENT, () => {
+      setEpoch((n) => n + 1);
+      void read2();
+    }) : null;
+    return () => {
+      if (typeof off === "function") off();
+    };
+  }, [read2]);
+  const address = settings && settings.comfy_url;
+  return jsxs158("div", {
+    "data-testid": "continuo-settings",
+    "data-source": address ? address.source : "loading",
+    children: [
+      jsx179(AddressRow, { rest: rest2, field: address || null, epoch, onSettings: setSettings }),
+      ...Object.keys(FOLDERS).map((name2) => jsx179(FolderRow, { rest: rest2, name: name2, field: settings && settings[name2] || null, epoch, onSettings: setSettings }, name2))
+    ]
+  });
+}
+function registerEngineSettings(ctx) {
+  if (!ctx || typeof ctx.registerSettingsPage !== "function") return null;
+  const rest2 = (...args) => ctx.rest(...args);
+  return ctx.registerSettingsPage({
+    id: "engine",
+    title: "Continuo",
+    icon: "device-camera-video",
+    render: () => jsx179(EngineSettingsPage, { rest: rest2 })
+  });
+}
+
 // desktop/film-suite/src/shared/api/runtime.js
-import { PALETTE_AREA as PALETTE_AREA3, ROUTES_AREA, SIDEBAR_NAV_AREA, host as host6 } from "@hermes/plugin-sdk";
-import { jsx as jsx179 } from "react/jsx-runtime";
+import { PALETTE_AREA as PALETTE_AREA3, ROUTES_AREA, SIDEBAR_NAV_AREA, host as host7 } from "@hermes/plugin-sdk";
+import { jsx as jsx180 } from "react/jsx-runtime";
 var rest = null;
 var store = null;
 var contributeFn = null;
@@ -130662,7 +131186,7 @@ var runtime_default = {
         // The Hermes panel tab reads the route title (frame decision 7); without it Hermes humanizes the path.
         title: "Continuo",
         data: { path: FILM_SUITE_PATH },
-        render: () => jsx179(FilmSuitePage, {})
+        render: () => jsx180(FilmSuitePage, {})
       },
       {
         id: "film-suite-nav",
@@ -130677,13 +131201,14 @@ var runtime_default = {
           id: "film-suite.film-suite.open",
           label: "Continuo: Open",
           keywords: ["continuo", "film suite", "film", "suite", "page", "image", "video", "shoot", "music", "jobs"],
-          run: () => host6.navigate(FILM_SUITE_PATH)
+          run: () => host7.navigate(FILM_SUITE_PATH)
         }
       },
       // R2 (B3 revised 20.10.): Hermes' status bar shows only the running job; the project
       // lives in the suite's own bar at the bottom (page/frame/frame-bar.js).
-      { id: "status", area: "statusBar.right", order: 135, render: () => jsx179(FilmSuiteStatusItem, {}) }
+      { id: "status", area: "statusBar.right", order: 135, render: () => jsx180(FilmSuiteStatusItem, {}) }
     ]);
+    registerEngineSettings(ctx);
   }
 };
 export {

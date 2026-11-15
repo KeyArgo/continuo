@@ -40,6 +40,24 @@
   },
   "steps": {
    "pointer": "/2/inputs/steps"
+  },
+  "trait_gender": {
+   "pointer": "/2/inputs/instruct"
+  },
+  "trait_age": {
+   "pointer": "/2/inputs/instruct"
+  },
+  "trait_pitch": {
+   "pointer": "/2/inputs/instruct"
+  },
+  "trait_style": {
+   "pointer": "/2/inputs/instruct"
+  },
+  "trait_accent": {
+   "pointer": "/2/inputs/instruct"
+  },
+  "trait_dialect": {
+   "pointer": "/2/inputs/instruct"
   }
  },
  "controls": [
@@ -92,6 +110,101 @@
    "min": 4,
    "max": 64,
    "step": 1
+  },
+  {
+   "id": "trait_gender",
+   "label": "Gender",
+   "section": "performance",
+   "kind": "choice",
+   "default": "",
+   "options": [
+    "",
+    "male",
+    "female"
+   ]
+  },
+  {
+   "id": "trait_age",
+   "label": "Age",
+   "section": "performance",
+   "kind": "choice",
+   "default": "",
+   "options": [
+    "",
+    "child",
+    "teenager",
+    "young adult",
+    "middle-aged",
+    "elderly"
+   ]
+  },
+  {
+   "id": "trait_pitch",
+   "label": "Pitch",
+   "section": "performance",
+   "kind": "choice",
+   "default": "",
+   "options": [
+    "",
+    "very low pitch",
+    "low pitch",
+    "moderate pitch",
+    "high pitch",
+    "very high pitch"
+   ]
+  },
+  {
+   "id": "trait_style",
+   "label": "Style",
+   "section": "performance",
+   "kind": "choice",
+   "default": "",
+   "options": [
+    "",
+    "whisper"
+   ]
+  },
+  {
+   "id": "trait_accent",
+   "label": "Accent",
+   "section": "performance",
+   "kind": "choice",
+   "default": "",
+   "options": [
+    "",
+    "american accent",
+    "australian accent",
+    "british accent",
+    "canadian accent",
+    "chinese accent",
+    "indian accent",
+    "japanese accent",
+    "korean accent",
+    "portuguese accent",
+    "russian accent"
+   ]
+  },
+  {
+   "id": "trait_dialect",
+   "label": "Dialect",
+   "section": "performance",
+   "kind": "choice",
+   "default": "",
+   "options": [
+    "",
+    "河南话",
+    "陕西话",
+    "四川话",
+    "贵州话",
+    "云南话",
+    "桂林话",
+    "济南话",
+    "石家庄话",
+    "甘肃话",
+    "宁夏话",
+    "青岛话",
+    "东北话"
+   ]
   }
  ],
  "fixed": {
@@ -117,7 +230,7 @@
   "key": "audio",
   "extension": ".flac"
  },
- "source": "Saganaki22/ComfyUI-OmniVoice-TTS 0.4.7 live (object_info 21.10.); settings = artist's omnivoice-hoerspiel-pipeline (steps 64, guidance 2.0, speed 0.9); keep_model_loaded false (fs-tf5 RESULT item 8: true keeps ~6 GB RAM per take)",
+ "source": "Saganaki22/ComfyUI-OmniVoice-TTS 0.4.7 live (object_info 21.10.); settings = artist's omnivoice-hoerspiel-pipeline (steps 64, guidance 2.0, speed 0.9); keep_model_loaded false (fs-tf5 RESULT item 8: true keeps ~6 GB RAM per take); voice traits (w41-audio F17): optional choices joined into the node's instruct, the closed vocabulary of upstream omnivoice 0.2.1 utils/voice_design.py (gender, age, pitch, style whisper, English accent, Chinese dialect); all empty = the pinned instruct \"\" (byte-identical graph)",
  "policy": {
   "graph_mutation": "declared_pointers_only",
   "custom_node_install": "never",

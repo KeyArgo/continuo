@@ -9,7 +9,8 @@ from __future__ import annotations
 # (code_license when it differs), gated, and per workflow the custom node packages {repo, commit}.
 # Unknown values stay null with a reason. GET /models/missing (agent tool continuo_models_missing)
 # answers, per workflow, which of its files are absent on THIS machine or carry another hash: read-only.
-# The models folder is FILM_SUITE_COMFY_MODELS, else <ComfyUI root>/models with the root from the Suite's one helper
+# The models folder is FILM_SUITE_COMFY_MODELS, else the comfy_models setting (w41-folders), else <ComfyUI root>/models
+# with the root (variable, setting, default) from the Suite's one helper
 # (generation/comfy_root.py, with its default; the model catalog reads the same),
 # plus every folder its ComfyUI root's extra_model_paths.yaml lists (lane w6-link item 5). A file's sha256 is hashed once
 # and kept by (path, size, mtime) in a private cache, so a repeated call does not re-read the weights.
@@ -27,7 +28,7 @@ def _model_sources() -> dict[str, Any]:
 
 
 def _models_root() -> Path:
-    configured = os.environ.get("FILM_SUITE_COMFY_MODELS")
+    configured = _model_catalog_module.comfy_models()
     if configured:
         return Path(configured)
     return _model_catalog_module.comfy_root() / "models"
@@ -114,7 +115,7 @@ def _model_file_path(models_root: Path, folder: str, name: str) -> Path:
 
 
 def _model_hash_cache_path() -> Path:
-    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    base = _local_data.records_base()
     return Path(state_root(Path(base) / "hermes")) / "model-hashes.json"
 
 
@@ -192,6 +193,17 @@ def _model_file_sha256_ready(path: Path, cache: dict[str, Any]) -> str | None:
     return None
 
 
+def _model_text_sha256(path: Path) -> str | None:
+    """sha256 of a small text file as the code reads it: UTF-8, CRLF as LF, outer whitespace stripped (w41-qwen2)."""
+    try:
+        if path.stat().st_size > 64 * 1024:
+            return None
+        text = path.read_bytes().decode("utf-8").replace("\r\n", "\n").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def _models_missing(workflow: str | None) -> dict[str, Any]:
     sources = _model_sources()
     models, workflows = sources["models"], sources["workflows"]
@@ -213,8 +225,14 @@ def _models_missing(workflow: str | None) -> dict[str, Any]:
             path = _model_file_path(root, entry["folder"], entry["name"])
             if not path.is_file():
                 state = "absent"
-            elif entry.get("bytes") is not None and path.stat().st_size != entry["bytes"]:
+            elif entry.get("bytes") is not None and path.stat().st_size != entry["bytes"] and not entry.get("text_sha256"):
                 state = "wrong_hash"
+            elif entry.get("text_sha256"):
+                # w41-qwen2: a text file the code reads as text (a rewriter's system prompt): a CRLF copy or one
+                # without its last newline is the same text; it is matched like the code matches it.
+                state = None if _model_text_sha256(path) == entry["text_sha256"] else "wrong_hash"
+                if state is None:
+                    continue
             elif entry.get("sha256") and (digest := _model_file_sha256_ready(path, hash_cache)) is None:
                 state = "unverified"
             elif entry.get("sha256") and digest != entry["sha256"]:
@@ -225,6 +243,7 @@ def _models_missing(workflow: str | None) -> dict[str, Any]:
                 "name": entry["name"], "folder": entry["folder"], "state": state, "url": entry.get("url"),
                 "gb": round(entry["bytes"] / 1e9, 2) if entry.get("bytes") else None, "sha256": entry.get("sha256"),
                 "license": entry.get("license"), "gated": entry.get("gated"), "reason": entry.get("reason"),
+                **({"optional": True} if entry.get("optional") is True else {}),
             })
         answer[workflow_id] = {"missing": missing, "node_packages": workflows[workflow_id].get("node_packages", [])}
     return {"schema": "studio.models-missing/1", "workflows": answer}
@@ -238,6 +257,10 @@ async def models_missing(request: Request) -> Any:
         return JSONResponse(status_code=422, content={"error": {"code": "invalid_request", "message": "workflow is an id like minimax-h3-frames-v1"}})
     try:
         out = await asyncio.to_thread(_models_missing, workflow)
+    except ValueError as exc:
+        if getattr(exc, "comfy_folder_setting", False):  # w41-folders: a saved folder that cannot be used, the fact
+            return JSONResponse(status_code=409, content={"error": {"code": "comfy_folder_invalid", "message": str(exc)}})
+        return JSONResponse(status_code=503, content={"error": {"code": "model_sources_unavailable", "message": "The model source list is unavailable"}})
     except Exception:  # noqa: BLE001 - finite error, never a path
         return JSONResponse(status_code=503, content={"error": {"code": "model_sources_unavailable", "message": "The model source list is unavailable"}})
     if "error" in out:

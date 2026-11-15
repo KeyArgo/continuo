@@ -11,6 +11,11 @@ _engine_process_spec = importlib.util.spec_from_file_location("film_suite_engine
 _engine_process = importlib.util.module_from_spec(_engine_process_spec)
 _engine_process_spec.loader.exec_module(_engine_process)
 _child_env = _engine_process.child_env
+# w41-mac-b item 1 (PR #2 by @ShawnCRMer): where machine-local records live (dashboard/local_data): LOCALAPPDATA,
+# else ~/Library/Application Support on macOS (its temp folder is emptied), else the temp folder.
+_local_data_spec = importlib.util.spec_from_file_location("film_suite_local_data", Path(__file__).with_name("local_data") / "__init__.py")
+_local_data = importlib.util.module_from_spec(_local_data_spec)
+_local_data_spec.loader.exec_module(_local_data)
 MEDIA_PROBE_CACHE: dict[tuple[str, int, int], dict[str, Any]] = {}
 MEDIA_EXTENSIONS = {".png": "image", ".jpg": "image", ".jpeg": "image", ".webp": "image", ".mp4": "video"}
 # Sound files (lane fs-msnd): kind "audio" for exactly the suffixes /projects/timeline/audio/add takes

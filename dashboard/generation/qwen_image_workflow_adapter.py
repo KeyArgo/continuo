@@ -18,8 +18,37 @@ from typing import Any, Mapping
 
 REQUEST_SCHEMA = "studio.image-workflow-request/1"
 _UPLOAD = re.compile(r"^filmsuite-(?:edit|ref)-[0-9a-f]{32}\.png \[temp\]$")
+# w41 img-b F6: the whole PE answer -> the JSON string value of rewritten_prompt (or the mis-typed rewrited_prompt);
+# RegexReplace node 516 then unescapes \" \\ \/. An answer without the key does not match and passes unchanged.
+QWEN_PE_REWRITE_PATTERN = r'^.*?"rewritt?e[dn]_prompt"\s*:\s*"((?:[^"\\]|\\.)*)".*$'
 _TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _CATALOG_MODULE = None
+_GUARD_MODULE = None
+# w41-qwen2: Qwen's official PE system prompts (QwenLM/Qwen-Image-2.1 prompt_rewrite/prompts/system_prompt_*.txt,
+# the system_prompt.txt of Qwen/Qwen-Image-2.1-PE-T2I / -PE-I2I) are part of what the rewriter weights were trained
+# on, so they are model files: Continuo ships neither text. The artist's machine holds each one byte for byte next to
+# its rewriter checkpoint (ComfyUI models/text_encoders), named after the checkpoint with ".system_prompt.txt". The
+# caller that knows the models root reads them (image_workflow_contract.compiler) and passes them in; this module
+# never searches the disk. Pinned by the sha256 of the text stripped of outer whitespace (CRLF read as LF), as QwenLM
+# pe_core.load_system_prompt reads it; a file with another hash counts as absent.
+SYSTEM_PROMPT_FOLDER = "text_encoders"
+SYSTEM_PROMPT_FILES = {
+    "t2i": "qwen3.5_9b_qwen_image_2.1_pe_t2i.int8_convrot.system_prompt.txt",
+    "edit": "qwen3.5_9b_qwen_image_2.1_pe_i2i.int8_convrot.system_prompt.txt",
+}
+SYSTEM_PROMPT_MAX_BYTES = 64 * 1024
+SYSTEM_PROMPT_SHA256 = {
+    "t2i": "7950572bdd4c8350b6bddd38c7af74c517d77799c8b9e2572aa6bbd5e9e7de73",
+    "edit": "f2676789fdfcc427f9f314df0d01d3f3f2526b79aaa026274b3f493387a7940b",
+}
+# w41-qwen: Qwen's PE sampling profile (QwenLM prompt_rewrite pe_core.py:83-97; README "thinking | on (required)").
+# The installed TextGenerate takes thinking (opens <think> in the chat template, comfy qwen35.py:1273-1274) and
+# max_length, which counts generated tokens only (qwen35.py _generate_mtp: while len(ids) < max_length; llama.py
+# generate: for step in range(max_length)), i.e. max_new_tokens. temperature/top_p/top_k already match the pins.
+PE_PROFILES = {
+    "t2i": {"thinking": True, "max_length": 16256, "sampling_mode.presence_penalty": 1.5},
+    "edit": {"thinking": True, "max_length": 24000, "sampling_mode.presence_penalty": 0},
+}
 
 
 class WorkflowRequestError(ValueError):
@@ -51,6 +80,32 @@ def load_catalog_module():
     return _CATALOG_MODULE
 
 
+def load_guard_module():
+    """The area-edit route's enhancer guard (qwen_enhancer_guard.py), by file path like the catalog."""
+    global _GUARD_MODULE
+    if _GUARD_MODULE is None:
+        path = Path(__file__).with_name("qwen_enhancer_guard.py")
+        spec = importlib.util.spec_from_file_location("qwen_enhancer_guard_shared", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _GUARD_MODULE = module
+    return _GUARD_MODULE
+
+
+def official_system_prompt(task: str, raw: Any) -> str | None:
+    """Qwen's official system prompt for ``task`` ("t2i" or "edit") from the file's bytes, stripped like QwenLM
+    pe_core; None when the file is absent, too large, not UTF-8 or holds another text than the pinned one."""
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8")
+    if not isinstance(raw, (bytes, bytearray)) or len(raw) > SYSTEM_PROMPT_MAX_BYTES:
+        return None
+    try:
+        text = bytes(raw).decode("utf-8").replace("\r\n", "\n").strip()
+    except UnicodeDecodeError:
+        return None
+    return text if hashlib.sha256(text.encode("utf-8")).hexdigest() == SYSTEM_PROMPT_SHA256.get(task) else None
+
+
 def _read_asset(folder: Path, name: str, expected: str) -> dict:
     path = folder / name
     try:
@@ -69,6 +124,36 @@ def _read_asset(folder: Path, name: str, expected: str) -> dict:
     if type(value) is not dict:
         raise WorkflowRequestError("workflow asset malformed")
     return value
+
+
+def _slot_value(graph: Mapping[str, Any], pointer: Any) -> Any:
+    """The compiled graph's value at a manifest slot pointer ``/<node>/inputs/<name>``, or None."""
+    if not isinstance(pointer, str):
+        return None
+    parts = pointer.split("/")[1:]
+    if len(parts) != 3 or parts[1] != "inputs":
+        return None
+    node = graph.get(parts[0])
+    inputs = node.get("inputs") if isinstance(node, Mapping) else None
+    value = inputs.get(parts[2]) if isinstance(inputs, Mapping) else None
+    return value if type(value) in (str, int, float) else None
+
+
+def slot_compatible(graph: Mapping[str, Any], slot: Mapping[str, Any], live: Any) -> bool:
+    """One manifest slot against the live ``/object_info`` input of its node.
+
+    A choice list (sampler, scheduler, model file, reference position) needs the value THIS run uses to exist live;
+    the author's whole list is not required (PR #2 by @ShawnCRMer, 8c6ba33: a ComfyUI without RES4LYF has no
+    ``res_6s`` / ``beta57`` and was refused although the run used a stock sampler).  A value the graph does not hold
+    at the slot's pointer fails closed.  A scalar slot (type, bounds) must match its pinned declaration exactly.
+    """
+    expected = slot["schema"]
+    if not isinstance(live, list) or not live:
+        return False
+    if isinstance(expected[0], list):
+        chosen = _slot_value(graph, slot.get("pointer"))
+        return isinstance(live[0], list) and chosen is not None and chosen in live[0]
+    return live == expected
 
 
 def _set_pointer(graph: dict, pointer: str, value: Any) -> None:
@@ -100,8 +185,12 @@ def _validate_control(control: Mapping, value: Any) -> None:
 class QwenImageWorkflowAdapter:
     """Pinned family compilation only; injected transport never drains a queue."""
 
-    def __init__(self, client: Any = None, *, asset_root: Path | None = None):
+    def __init__(self, client: Any = None, *, asset_root: Path | None = None, system_prompts: Mapping[str, Any] | None = None):
         self.client = client
+        # w41-qwen2: the file contents the caller read from this machine, per task; kept only when they are the
+        # pinned official text, so a missing or changed file is the same fact: absent.
+        given = system_prompts if isinstance(system_prompts, Mapping) else {}
+        self.system_prompts = {task: official_system_prompt(task, given.get(task)) for task in SYSTEM_PROMPT_FILES}
         here = Path(__file__).resolve()
         repository = here.parents[4] / "workflows"
         installed = here.parents[1] / "workflows"
@@ -184,6 +273,38 @@ class QwenImageWorkflowAdapter:
             graph["504"]["inputs"].pop("image", None)
         if effective["prompt_enhancer"]:
             graph["500"]["inputs"]["clip_name"] = enhancer["i2i_model" if refs else "t2i_model"]
+            # w41 img-b F6: the enhancer samples with the run's seed (a fixed 0 gave every picture of a batch the same
+            # rewrite), like the area-edit route (qwen_image_edit_adapter ENHANCER_SEED_POINTER, p13-img IMG-130).
+            graph[enhancer["generate_node"]]["inputs"]["sampling_mode.seed"] = effective["seed"]
+            # w41 img-b F6: only the rewrite reaches the image model. The PE answers {"rewritten_prompt": ...,
+            # "wh_ratio": ..., "ratio_follow": ...} (QwenLM prompt_rewrite pe_core.parse_answer; it also accepts the
+            # mis-typed "rewrited_prompt"); node 515 flattened every value with ". ", so "16:9" / "<image1>" landed in
+            # the prompt. It now keeps the rewritten_prompt string only; an answer without it passes as before.
+            graph["515"]["inputs"]["regex_pattern"] = QWEN_PE_REWRITE_PATTERN
+            graph["515"]["inputs"]["replace"] = "\\1"
+            graph["515"]["inputs"]["count"] = 1
+            # w41-qwen: the area-edit route's guard (qwen_enhancer_guard: RegexMatch 911 + ComfySwitchNode 912 on
+            # switch 505). A rewrite that is word soup or grounding JSON falls back to the artist's prompt 502.
+            load_guard_module().insert(graph, enhancer["switch_node"], WorkflowRequestError)
+            official = self.system_prompts["edit" if refs else "t2i"]
+            if official is not None:
+                # w41-qwen: the rewriter gets Qwen's official system prompt ("required, ships with each model"),
+                # here read from this machine (w41-qwen2). Node 501 held a house edit text in both pins and switch
+                # 513 sent none. Chosen like the checkpoint (500): the t2i text without references, the edit text
+                # with them. Pins stay unchanged.
+                graph["501"]["inputs"]["value"] = official
+                graph["513"]["inputs"]["switch"] = True
+                # w41-qwen: thinking on with the official budget and presence penalty of the chosen checkpoint (it
+                # was off, 8192, 0). Node 514 already cuts the think block; a rewrite cut off while thinking comes
+                # back empty and the guard passes the artist's prompt.
+                for name, value in PE_PROFILES["edit" if refs else "t2i"].items():
+                    if name not in graph[enhancer["generate_node"]]["inputs"]:
+                        raise WorkflowRequestError("declared slot missing")
+                    graph[enhancer["generate_node"]]["inputs"][name] = value
+            # w41-qwen2: without its official text the rewriter runs as published after w41 round one: no system
+            # prompt (513 off), thinking off, 8192 tokens, presence 0 (the pinned values); guard and parse stay.
+            # Thinking and the large budget belong to the official contract; without its system prompt the
+            # rewriter does not think for 16k tokens.
         else:
             # OFF is structurally pruned, not just lazy-unselected: an absent PE
             # checkpoint must not block validation or load any enhancer weights.
@@ -191,6 +312,18 @@ class QwenImageWorkflowAdapter:
             for node_id in enhancer["branch_nodes"]:
                 graph.pop(node_id, None)
         return graph
+
+    def warnings(self, request: Mapping[str, Any]) -> list[str]:
+        """Facts about how this request runs, in the area-edit route's ``warnings`` form ("code: fact"). w41-qwen2:
+        with the enhancer on and the chosen rewriter's official system prompt absent on this machine."""
+        controls = request.get("controls") if isinstance(request, Mapping) else None
+        if not isinstance(controls, Mapping) or controls.get("prompt_enhancer") is not True:
+            return []
+        task = "edit" if request.get("references") else "t2i"
+        if self.system_prompts.get(task) is not None:
+            return []
+        return [f"enhancer_system_prompt_absent: {SYSTEM_PROMPT_FILES[task]} is not in {SYSTEM_PROMPT_FOLDER} or holds "
+                "another text; the rewrite runs without Qwen's system prompt and without thinking (8192 tokens)"]
 
     def output_size(self, request: dict, references: list[dict]) -> tuple[int, int]:
         manifest, graph = self.load_assets(request["target_id"])
@@ -239,16 +372,9 @@ class QwenImageWorkflowAdapter:
             if not isinstance(schema, Mapping):
                 continue
             live = ((schema.get("input") or {}).get(slot["schema_group"]) or {}).get(slot["input_name"])
-            expected = slot["schema"]
             # File/options inventories can grow; scalar types and bounds may
             # not silently change under a pinned control declaration.
-            compatible = isinstance(live, list) and bool(live)
-            if compatible:
-                if isinstance(expected[0], list):
-                    compatible = isinstance(live[0], list) and all(v in live[0] for v in expected[0])
-                else:
-                    compatible = live == expected
-            if not compatible:
+            if not slot_compatible(graph, slot, live):
                 schema_mismatches.append(f"{slot['class_type']}.{slot['input_name']}")
         return {"state": "missing" if missing_classes or missing_files or schema_mismatches else "ready_static",
                 "missing_classes": sorted(set(missing_classes)), "missing_files": sorted(set(missing_files)),
@@ -291,6 +417,7 @@ class QwenImageWorkflowAdapter:
         return text[0]
 
 
-def create_adapter():
-    """Catalog adapter-factory protocol; generic admission has no model branch."""
-    return QwenImageWorkflowAdapter()
+def create_adapter(system_prompts: Mapping[str, Any] | None = None):
+    """Catalog adapter-factory protocol; generic admission has no model branch. ``system_prompts``: the contents of
+    SYSTEM_PROMPT_FILES as read from this machine by the caller (w41-qwen2)."""
+    return QwenImageWorkflowAdapter(system_prompts=system_prompts)

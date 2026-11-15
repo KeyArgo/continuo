@@ -8,7 +8,7 @@ music and render the film. Hermes works in the same project, on the page you hav
 **Start without any model.** Open the Sample film, change the cut and render an MP4. Only ffmpeg is needed for that.
 Script, Cut, beat analysis and Deliver run on the CPU.
 
-**You and Hermes work on the same film.** Hermes gets 209 tools that cover every page, and the open page shows
+**You and Hermes work on the same film.** Hermes gets 212 tools that cover every page, and the open page shows
 what Hermes did. On Script and Cut you can undo each of its changes. Only you can approve a folder for Continuo.
 
 ```
@@ -83,12 +83,35 @@ you changed the scene or the cut since then, the edit is refused and nothing is 
 
 | Part | Requirement | Notes |
 |:---|:---|:---|
-| Platform | Windows 11 | Tested on Windows 11. The code is written to run on Linux too, not yet tested; reports are welcome, see [Feedback](#feedback). macOS is on the roadmap. |
+| Platform | Windows 11, macOS (Apple Silicon) | Tested on Windows 11. A contributor ran it on macOS 26.5 on an Apple M4 Pro; see [macOS](#macos) for what ran there and what did not. The code is written to run on Linux too, not yet tested; reports are welcome, see [Feedback](#feedback). |
 | Hermes&nbsp;Agent | `>=0.22.7` | With the Hermes desktop app. |
-| ffmpeg | Required | For Cut, Deliver and Audio; tested with 7.1.1. Looked up in `FFMPEG_PATH`, then `PATH`, then `C:\ffmpeg\bin`. |
-| ComfyUI | For generation | Generates pictures, video, music and voice on your machine: Continuo asks `http://127.0.0.1:8188`, then `http://127.0.0.1:8000` (the ComfyUI desktop app). Another address: set `FILM_SUITE_COMFY_URL` (for example `http://127.0.0.1:8189`). |
+| ffmpeg | Required | For Cut, Deliver and Audio; tested with 7.1.1. Looked up in `FFMPEG_PATH`, then `PATH`, then `C:\ffmpeg\bin`. macOS: `brew install ffmpeg`. |
+| ComfyUI | For generation | Generates pictures, video, music and voice. Without a setting Continuo asks this machine: `http://127.0.0.1:8188`, then `http://127.0.0.1:8000` (the ComfyUI desktop app). Another address: Hermes Settings › Plugins › Continuo › ComfyUI address (Test, then Save; it applies to the next request, no restart). The environment variable `FILM_SUITE_COMFY_URL` overrides the setting. An address on another machine sends your prompts and pictures to that machine. |
+| ComfyUI&nbsp;folders | For generation | Where ComfyUI is installed (its models and custom nodes) and, if you keep them elsewhere, your models: Hermes Settings › Plugins › Continuo › ComfyUI folder and Models folder (Choose… or type the path, then Save; it applies to the next request, no restart). Empty: the usual install, `Documents\ComfyUI-Easy-Install\ComfyUI` on Windows (macOS: see [macOS](#macos)), and that folder's `models`. A folder that is missing, relative or on the network is refused with the reason. The environment variables `FILM_SUITE_COMFY_ROOT` and `FILM_SUITE_COMFY_MODELS` override the settings. Only you set these folders; Hermes may read them. |
 | GPU | For generation | Script, Cut, Audio analysis and Deliver run on the CPU, so a GPU is optional for them. Generation uses your GPU. |
-| Disk | 22&nbsp;MB&nbsp;+&nbsp;511&nbsp;MB | Measured: the plugin 22 MB; its Python packages 511 MB, set up by Hermes. Models need extra space, see [Models](#models-optional). |
+| Disk | 23&nbsp;MB&nbsp;+&nbsp;511&nbsp;MB | Measured: the plugin 23 MB; its Python packages 511 MB, set up by Hermes. Models need extra space, see [Models](#models-optional). |
+
+### macOS
+
+A contributor ran Continuo on macOS 26.5 on an Apple M4 Pro: the Sample film from Script to Deliver, beat tracking, object
+removal, speech detection and one image model through ComfyUI; the song and scene engines installed. Not run on a Mac so far:
+the Continuo pane inside Hermes Desktop, video, the larger image models, and song or scene analysis on real material. Reports
+are welcome, see [Feedback](#feedback).
+
+- **ffmpeg:** `brew install ffmpeg`.
+- **Machine-local records** (approved folders, analysis caches, job records) live in
+  `~/Library/Application Support/hermes/film-suite/` unless `LOCALAPPDATA` is set, not in the temp folder macOS empties.
+- **Engines** install from their own macOS hash locks (`scripts/engine-locks/ENGINE.macos.txt`: the same package
+  versions, torch without the CUDA tag). `--cpu-only` is ignored on macOS. The engines use the GPU (`mps`) when
+  ComfyUI's queue is empty, except Beat This!, which stays on the CPU (the contributor measured it no faster on Metal,
+  with identical beats); `FILM_SUITE_BEAT_DEVICE`, `FILM_SUITE_SONG_DEVICE`, `FILM_SUITE_SCENE_DEVICE` or
+  `FILM_SUITE_INPAINT_DEVICE` set to `mps` or `cpu` overrides.
+- **ComfyUI folder** (models and custom nodes): Hermes Settings › Plugins › Continuo › ComfyUI folder names it; empty,
+  it is looked for at ComfyUI Desktop's install folder, then `~/Documents/ComfyUI`, `~/ComfyUI` and `~/comfy/ComfyUI`.
+  `FILM_SUITE_COMFY_ROOT` overrides the setting.
+- **GPU line** in Jobs shows the Apple GPU and the unified memory in use.
+- **Shortcuts:** labels show ⌘ where Windows shows Ctrl, and the Script page's own keys (focus, undo a scene move,
+  save a synopsis, paste Fountain) answer to ⌘. Find stays Ctrl+H. Not tried inside Hermes Desktop on a Mac.
 
 ### Steps
 
@@ -108,8 +131,9 @@ No GitHub login is needed. The plugin's id in Hermes is `film-suite`; Continuo i
 2. Open **Capabilities > Plugins**, find **Continuo** and turn its switch on. Continuo appears in the sidebar at once.
    Hermes installs a plugin's window switched off, and `hermes plugins enable` turns on only the agent's tools. A
    restart does not turn the window on.
-3. Open **Continuo** from the sidebar. Hermes also gets three skills: `film-suite:continuo` (which tool does what),
-   `film-suite:video-prompts` and `film-suite:image-prompts` (how to prompt the video and image models).
+3. Open **Continuo** from the sidebar. Hermes also gets five skills: `film-suite:continuo` (which tool does what),
+   `film-suite:video-prompts`, `film-suite:image-prompts`, `film-suite:voice-prompts` and `film-suite:music-prompts`
+   (how to prompt the video, image, voice and music models).
 
 ### Your first film, no models needed
 
@@ -211,14 +235,14 @@ Face, custom nodes on GitHub.
 | krea2-turbo-t2i-create | Image › Create (Krea 2 Turbo) | 18.99 GB | 3 | Comfy-Org/Krea-2; Comfy-Org/Qwen-Image; Comfy-Org/Qwen3-VL |
 | moss-image-sft-create-v1 | Image › Create (MOSS-Image) | 20.25 GB | 3 | Comfy-Org/Flux-2-Dev; Comfy-Org/MOSS-Image |
 | p-h3-image-lora-t2i-v1 | Image › Create (P-H3-Image) | 31.19 GB | 4 | Comfy-Org/MiniMax-H3; PrunaAI/P-H3-Image-Comfy |
-| qwen-image-2.1-create-pe-v3-v2 | Image › Create (Qwen-Image 2.1) | 27.09 GB | 5 | Comfy-Org/Qwen-Image-2.1; Comfy-Org/Qwen3-VL; PrunaAI/Pruna-Q-Image-2.1 |
+| qwen-image-2.1-create-pe-v3-v2 | Image › Create (Qwen-Image 2.1) | 27.09 GB | 7 | Comfy-Org/Qwen-Image-2.1; Comfy-Org/Qwen3-VL; PrunaAI/Pruna-Q-Image-2.1; Qwen/Qwen-Image-2.1-PE-I2I; Qwen/Qwen-Image-2.1-PE-T2I |
 | flux3-klein-sd-edit-v1 | Image › Edit | 20.77 GB | 4 | Comfy-Org/Flux-2-Dev; Comfy-Org/Krea-2; KoalaNation/FLUX-3-KLEIN-MODELS; black-forest-labs/flux-3-image-klein-comfy |
 | flux2-klein-9b-kv-edit-v1 | Image › Edit (FLUX.2 Klein 9B) | 18.82 GB | 3 | Comfy-Org/Flux-2-Dev; Comfy-Org/Flux-2-Klein-9B; black-forest-labs/FLUX.2-klein-9b-kv-fp8 |
 | krea2-edit-turbo-v1 | Image › Edit (Krea 2 Turbo) | 20.82 GB | 4 | Comfy-Org/Krea-2; Comfy-Org/Qwen-Image; Comfy-Org/Qwen3-VL; conradlocke/krea2-identity-edit |
 | krea2-general-edit-v2 | Image › Edit (Krea 2 with the general edit LoRA) | 20.82 GB | 4 | Comfy-Org/Krea-2; Comfy-Org/Qwen-Image; Comfy-Org/Qwen3-VL; conradlocke/krea2-identity-edit |
 | krea2-edit-kroma-v1 | Image › Edit (Krea 2, Kroma) | 21.46 GB | 4 | Comfy-Org/Qwen-Image; Comfy-Org/Qwen3-VL; conradlocke/krea2-identity-edit; silveroxides/Kroma-Quant |
 | p-h3-image-lora-edit-v1 | Image › Edit (P-H3-Image) | 31.19 GB | 4 | Comfy-Org/MiniMax-H3; PrunaAI/P-H3-Image-Comfy |
-| qwen-image-2.1-edit-pe-v3-v2 | Image › Edit (Qwen-Image 2.1) | 27.09 GB | 5 | Comfy-Org/Qwen-Image-2.1; Comfy-Org/Qwen3-VL; PrunaAI/Pruna-Q-Image-2.1 |
+| qwen-image-2.1-edit-pe-v3-v2 | Image › Edit (Qwen-Image 2.1) | 27.09 GB | 7 | Comfy-Org/Qwen-Image-2.1; Comfy-Org/Qwen3-VL; PrunaAI/Pruna-Q-Image-2.1; Qwen/Qwen-Image-2.1-PE-I2I; Qwen/Qwen-Image-2.1-PE-T2I |
 | qwen-image-2.1-edit-pe-v3 | Image › Edit (Qwen-Image 2.1, earlier pin) | 27.09 GB | 5 | Comfy-Org/Qwen-Image-2.1; Comfy-Org/Qwen3-VL; PrunaAI/Pruna-Q-Image-2.1 |
 | krea2-identity-edit-v2 | Image › Edit that keeps a person's identity (Krea 2 with the identity edit LoRA) | 20.82 GB | 4 | Comfy-Org/Krea-2; Comfy-Org/Qwen-Image; Comfy-Org/Qwen3-VL; conradlocke/krea2-identity-edit |
 | flux3-klein-box-edit-v1 | Image › Edit: the Box tool | 11.02 GB | 3 | Comfy-Org/Flux-2-Dev; Comfy-Org/Krea-2; KoalaNation/FLUX-3-KLEIN-MODELS |
@@ -244,7 +268,7 @@ Not installed by this plugin.
 | Part | Needed for, where, measured size |
 |:---|:---|
 | ffmpeg | required for Cut, Deliver and Audio; found through FFMPEG_PATH, then PATH, then C:\ffmpeg\bin. Tested with ffmpeg 7.1.1 (gyan.dev full build, 0.44 GB measured). |
-| ComfyUI | optional; only for generating images, video, music and voice. Root: FILM_SUITE_COMFY_ROOT (default Documents\ComfyUI-Easy-Install\ComfyUI), server: FILM_SUITE_COMFY_URL when set (origin only: no credentials, path or query), otherwise this machine only, http://127.0.0.1:8188 then http://127.0.0.1:8000 (the first that answers). The ComfyUI folder without models, custom nodes and outputs measured 0.27 GB; its Python environment, custom nodes and models need extra space (model sizes above). |
+| ComfyUI | optional; only for generating images, video, music and voice. Root: FILM_SUITE_COMFY_ROOT when set, else the plugin setting comfy_root (Hermes Settings > Plugins > Continuo; an existing absolute local folder), otherwise the usual install (Documents\ComfyUI-Easy-Install\ComfyUI on Windows); models elsewhere: FILM_SUITE_COMFY_MODELS when set, else the plugin setting comfy_models; both folders are set by the artist only. Server: FILM_SUITE_COMFY_URL when set, else the plugin setting comfy_url (Hermes Settings > Plugins > Continuo; origin only: no credentials, path or query; another machine receives the prompts and pictures), otherwise this machine only, http://127.0.0.1:8188 then http://127.0.0.1:8000 (the first that answers). The ComfyUI folder without models, custom nodes and outputs measured 0.27 GB; its Python environment, custom nodes and models need extra space (model sizes above). |
 | optional engines | beat tracking (measured 4.3 GB with its torch environment), scene analysis (0.67 GB), song map (0.16 GB), speech detection (2.3 MB), inpainting. Not installed by this plugin; features that need one show it as unavailable. |
 
 ### Optional analysis engines
@@ -272,15 +296,15 @@ Silero installs the model only; dialogue ducking also needs `onnxruntime` import
 
 **Transcription:** `faster-whisper` is provided by Hermes' local speech-to-text (voice) option. Continuo uses `large-v3` offline only: cache `Systran/faster-whisper-large-v3` beforehand, for example by running `python -c "from huggingface_hub import snapshot_download; snapshot_download('Systran/faster-whisper-large-v3')"` in the same user/cache environment. Without the package or cached model, transcription shows as unavailable.
 
-On Linux/macOS the default engine location is `~/AppData/Local/hermes/film-suite/engines/` unless `LOCALAPPDATA` or the engine lookup override `FILM_SUITE_BEAT_ENGINE_DIR`, `FILM_SUITE_SONG_ENGINE_DIR`, `FILM_SUITE_SCENE_ENGINE_DIR`, or `FILM_SUITE_INPAINT_ENGINE_DIR` is set; the installers do not read these engine-specific overrides, so use their `--engine-dir` flag to match one.
+On macOS the default engine location is `~/Library/Application Support/hermes/film-suite/engines/`; on Linux it is `~/AppData/Local/hermes/film-suite/engines/`, unless `LOCALAPPDATA` or the engine lookup override `FILM_SUITE_BEAT_ENGINE_DIR`, `FILM_SUITE_SONG_ENGINE_DIR`, `FILM_SUITE_SCENE_ENGINE_DIR`, or `FILM_SUITE_INPAINT_ENGINE_DIR` is set; the installers do not read these engine-specific overrides, so use their `--engine-dir` flag to match one.
 
-Thanks to @ShawnCRMer for reporting the missing installer (#1).
+Thanks to @ShawnCRMer for reporting the missing installer (#1) and for the macOS port (#2).
 
 </details>
 
 ## Talk to Hermes
 
-Continuo gives Hermes 209 `continuo_*` tools that cover all pages. Hermes picks the right ones from a plain
+Continuo gives Hermes 212 `continuo_*` tools that cover all pages. Hermes picks the right ones from a plain
 sentence, and the page you have open shows the result live.
 
 | You say | Hermes uses |
@@ -303,7 +327,8 @@ local engines listed under [Programs it starts](#programs-it-starts)), talks to 
 engines), reads `/proc/self/fd` on Linux to re-open a file it already holds, and ships a large bundled
 `desktop/plugin.js` (encoded data and `../` import paths inside it).
 
-Once Continuo is listed in the Hermes plugin catalog, it installs by name: `hermes plugins install film-suite`.
+From the Hermes plugin catalog it installs by name: `hermes plugins install film-suite`. The catalog points at a reviewed
+version and can be behind this repository.
 
 ### Network
 
@@ -317,14 +342,16 @@ Continuo calls only these hosts:
 | `imagecache.civitai.com` | LoRA preview images of that lookup |
 | `optim-images.krea.ai` | style-browser thumbnails of an uncached board |
 | `cloud.cp.jku.at` | Beat This! checkpoint download when the optional beat installer is run |
+| `huggingface.co` | Beat This! checkpoint, second source (a third party's repository pinned to one commit, accepted only with the same sha256) when the optional beat installer is run and cloud.cp.jku.at fails |
 | `download.pytorch.org` | PyTorch wheels when optional hash-locked engine installers are run |
 | `pypi.org` | Python packages when optional hash-locked engine installers are run |
 | `raw.githubusercontent.com` | pinned Silero VAD model when its optional installer is run |
 
 Never fetched:
 
-- Links in documentation and metadata only: `hermes-agent.nousresearch.com`, `github.com`, `fountain.io`, `www.w3.org`, `ns.adobe.com`, `huggingface.co`, `docs.comfy.org`, `www.minimax.io`, `ffmpeg.org`.
+- Links in documentation and metadata only: `hermes-agent.nousresearch.com`, `github.com`, `fountain.io`, `www.w3.org`, `ns.adobe.com`, `docs.comfy.org`, `www.minimax.io`, `ffmpeg.org`.
 - Source citations in the bundled music reference list: `blogs.loc.gov`, `downloads.bbc.co.uk`, `imslp.org`, `mtosmt.org`, `songdata.io`, `www.musicnotes.com`.
+- Source citations in the bundled prompt skills (`skills/*/references/`): links to model cards, vendor documentation and community posts.
 
 The language model Hermes uses is your Hermes setting, not part of this plugin; it may be remote.
 
@@ -353,7 +380,8 @@ Only while something you started runs:
 - your project folders: project.json, script/, state/, pictures/, clips/, sound/, output/ (Deliver) and exports/ (script, picture and previz exports) inside the folder you chose
 - <HERMES_HOME>/plugin-data/film-suite/: recent projects, job databases, image edits, LoRA cache, style thumbnails
 - <HERMES_HOME>/cache/film-suite/: staging copies of results before they are published to a project
-- %LOCALAPPDATA%\hermes\film-suite\engines\ (on Linux and macOS ~/AppData/Local/hermes/film-suite/engines/ unless LOCALAPPDATA is set): optional analysis engines, only if you install them
+- %LOCALAPPDATA%\hermes\film-suite\: this machine's own records (approved folders, who started a job, review decisions, analysis caches, posters); without LOCALAPPDATA on macOS ~/Library/Application Support/hermes/film-suite/, on Linux the temp folder
+- %LOCALAPPDATA%\hermes\film-suite\engines\ (without LOCALAPPDATA on macOS ~/Library/Application Support/hermes/film-suite/engines/, on Linux ~/AppData/Local/hermes/film-suite/engines/): optional analysis engines, only if you install them
 - a per-profile receipt key inside the Hermes home, protected with a user+SYSTEM-only ACL on Windows (0600 on POSIX)
 
 ### Private Hermes access
@@ -369,7 +397,7 @@ Continuo uses no private Hermes interface. Hermes signs in every request to Cont
 | "Preparing the Audio engine, or restart Hermes" or "Preparing picture import, or restart Hermes" | A Python package is unavailable in this process. Hermes may still be setting it up, or may need a restart after setup. Hermes can check with `continuo_dependencies`. |
 | The Sample film tile says "ffmpeg not found" | Install ffmpeg and put it on `PATH`, set `FFMPEG_PATH`, or place it in `C:\ffmpeg\bin`; then choose **Sample film** again. No half-made sample is left behind. |
 | A recent project is unavailable or its project file is missing | Restore `project.json` and the project folder from the original or a backup, or open another project folder. If the missing project was a Sample film, choose the Sample film tile to create a new copy. |
-| "ComfyUI is not running." | Start ComfyUI on this machine. Continuo asks `http://127.0.0.1:8188`, then `http://127.0.0.1:8000`; for another address set `FILM_SUITE_COMFY_URL`. |
+| "ComfyUI is not running." | Start ComfyUI on this machine. Continuo asks `http://127.0.0.1:8188`, then `http://127.0.0.1:8000`; another address goes in Hermes Settings › Plugins › Continuo (Test shows whether ComfyUI answers there), or in `FILM_SUITE_COMFY_URL`, which overrides the setting. |
 | A model is missing | Ask Hermes "Which model files am I missing for &lt;workflow&gt;?" (`continuo_models_missing`), which names each file with its folder, size, sha256 and pinned download link; put the file into that ComfyUI folder. |
 | An analysis shows as unavailable | It may need an optional engine. See [Optional analysis engines](#optional-analysis-engines). |
 

@@ -82,14 +82,12 @@ def _music_open_paths(source: Path) -> tuple[str, Path, Path]:
     if music_analysis is not None:
         return _music_cache_paths(source)
     import hashlib
-    import os as _os
-    import tempfile as _tempfile
 
     digest = hashlib.sha256()
     with open(source, "rb") as handle:
         for block in iter(lambda: handle.read(1 << 20), b""):
             digest.update(block)
-    directory = Path(state_root(Path(_os.environ.get("LOCALAPPDATA") or _tempfile.gettempdir()) / "hermes")) / "analysis"
+    directory = Path(state_root(Path(_local_data.records_base()) / "hermes")) / "analysis"
     directory.mkdir(parents=True, exist_ok=True)
     hexdigest = digest.hexdigest()
     return hexdigest, directory / f"{hexdigest}.json", directory / f"{hexdigest}.wav"

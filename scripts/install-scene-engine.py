@@ -71,8 +71,18 @@ COMFY_ROOT = _root_module.comfy_root()  # FILM_SUITE_COMFY_ROOT: the Suite's one
 MEDIAPIPE = Path("models/detection/mediapipe_face_fp32.safetensors")
 
 
+def _machine_local() -> str:
+    """LOCALAPPDATA, else ~/Library/Application Support on macOS, else ~/AppData/Local (dashboard/local_data
+    engines_base, inline: this script stands alone; PR #2 by @ShawnCRMer)."""
+    if os.environ.get("LOCALAPPDATA"):
+        return os.environ["LOCALAPPDATA"]
+    if sys.platform == "darwin":
+        return os.path.join(os.path.expanduser("~"), "Library", "Application Support")
+    return str(Path.home() / "AppData" / "Local")
+
+
 def hermes_dir() -> Path:
-    base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    base = _machine_local()
     return Path(base) / "hermes"
 
 
@@ -167,7 +177,7 @@ def copy_vendor(edir: Path, source: Path) -> None:
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--engine-dir", type=Path, default=default_engine_dir())
-    ap.add_argument("--cpu-only", action="store_true", help="CPU torch wheels (no CUDA)")
+    ap.add_argument("--cpu-only", action="store_true", help="CPU torch wheels (no CUDA); macOS has one lock (MPS or CPU at run time) and ignores it")
     ap.add_argument("--candidates", type=Path, default=hermes_dir() / "film-suite" / "engines" / "candidates")
     ap.add_argument("--source-root", type=Path, default=None,
                     help="offline: folder of local clones (one per SOURCES name); default is each pinned URL")
@@ -187,7 +197,7 @@ def main(argv: list[str]) -> int:
     sources = fetch_sources(edir, args.source_root)
     copy_vendor(edir, edir / "src")
     shutil.copyfile(CORE / "scene_runner.py", edir / "runner.py")
-    probe = subprocess.run([py, "-c", "import torch, torchvision, transformers, sys; print(torch.__version__, torch.cuda.is_available(), sys.version.split()[0], transformers.__version__)"],
+    probe = subprocess.run([py, "-c", "import torch, torchvision, transformers, sys; print(torch.__version__, torch.cuda.is_available(), sys.version.split()[0], transformers.__version__, bool(getattr(torch.backends, 'mps', None) and torch.backends.mps.is_available()))"],
                            capture_output=True, text=True, check=True, env=engine_env.engine_process.engine_env()).stdout.split()
     record = {
         "schema": "studio.scene-engine/1",
@@ -203,6 +213,7 @@ def main(argv: list[str]) -> int:
                  "patches": ["omnishotcut/architecture/backbone.py: pretrained=False", "omnishotcut/engine.py: device from FILM_SUITE_SCENE_TORCH_DEVICE"]},
         "versions": {"torch": probe[0], "python": probe[2], "transformers": probe[3]},
         "cuda_available": probe[1] == "True",
+        "mps_available": probe[4] == "True",  # Apple Silicon GPU (Metal)
         "pins": [f"{n}=={v}" for n, v in sorted(engine_env.lock_pins(engine_env.lock_path(ENGINE, args.cpu_only)).items())],
         "parts": ["cuts", "speakers", "sync", "motion"],
     }

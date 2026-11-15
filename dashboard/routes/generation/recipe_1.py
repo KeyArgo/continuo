@@ -640,7 +640,7 @@ _IMAGE_RECIPE_PROVIDER = "local-comfyui"
 
 
 def _image_job_recipes_dir() -> Path:
-    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    base = _local_data.records_base()
     return Path(state_root(Path(base) / "hermes")) / "image-recipes"
 
 

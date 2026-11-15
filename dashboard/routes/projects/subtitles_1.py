@@ -166,7 +166,7 @@ async def projects_subtitles_apply(request: SubtitlesApplyRequest) -> dict[str, 
 # --- Create subtitles from audio ------------------------------------------------------------------------------------
 
 def _subtitles_asr_cache() -> Path:
-    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    base = _local_data.records_base()
     return state_root(Path(base) / "hermes") / "subtitles-asr"
 
 

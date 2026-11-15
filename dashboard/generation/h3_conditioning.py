@@ -517,6 +517,10 @@ _CAMERA_CONSEQUENCE = {
 }
 _CAMERA_TAG = re.compile(r"\[(?:arc|push|pull|shake|pan|tilt|truck|pedestal|dolly|zoom|orbit|handheld)[^\]]*\]", re.IGNORECASE)
 _SHOT_LABEL = "[Shot 1]"
+# The six-field References layout (video-prompts skill §5): the shots sit under detailed_description.
+_DETAILED_HEADING = re.compile(r"^[ \t]*detailed_description:", re.IGNORECASE | re.MULTILINE)
+_NEXT_HEADING = re.compile(r"^[ \t]*(?:subject_definitions|summary|retention_analysis|overall_soundscape|non_diegetic_music):",
+                           re.IGNORECASE | re.MULTILINE)
 
 
 def camera_args(value: Any) -> dict[str, str]:
@@ -559,12 +563,26 @@ def camera_sentence(camera: Mapping[str, str]) -> str:
     return f"The camera performs {term} with {camera['amplitude']} amplitude at {camera['speed']} speed: {consequence}"
 
 
+def _detailed_description_span(prompt: str) -> tuple[int, int] | None:
+    """``(body start, section end)`` of a six-field ``detailed_description:`` section, or None."""
+    heading = _DETAILED_HEADING.search(prompt)
+    if heading is None:
+        return None
+    following = _NEXT_HEADING.search(prompt, heading.end())
+    return heading.end(), following.start() if following else len(prompt)
+
+
 def camera_prompt(plan: Mapping[str, Any]) -> str:
     """The artist's prompt with the compiled camera (RESULT §4); unchanged without ``camera``.
 
-    The keyframe alignment line opens the prompt only when a keyframe sits at
-    frame 0 (``<Picture 1>`` is that still).  The camera sentence follows the
-    first ``[Shot 1]`` label, or opens the shot text when the prompt has none.
+    The keyframe alignment line opens the prompt only on Frames when a keyframe
+    sits at frame 0 (``<Picture 1>`` is that still; on References ``<Picture 1>``
+    is the first reference picture and a keyframe is an unlabelled guide).  The
+    camera sentence follows the first ``[Shot 1]`` label, or opens the shot text
+    when the prompt has none.  In a six-field prompt the shots live in
+    ``detailed_description``: the sentence follows the ``[Shot 1]`` there (an
+    earlier ``[Shot 1]`` in ``retention_analysis`` is a reference, not the shot),
+    or opens that section's text when it has no label.
     """
     camera = plan.get("camera")
     prompt = plan["prompt"]
@@ -572,13 +590,23 @@ def camera_prompt(plan: Mapping[str, Any]) -> str:
         return prompt
     newline = "\r\n" if "\r\n" in prompt else "\n"
     sentence = camera_sentence(camera)
-    at = prompt.find(_SHOT_LABEL)
-    if at >= 0:
+    span = _detailed_description_span(prompt)
+    if span is not None:
+        start, end = span
+        at = prompt.find(_SHOT_LABEL, start, end)
+        if at < 0:
+            lead = len(prompt[start:end]) - len(prompt[start:end].lstrip())
+            at = start + lead
+            body = prompt[:at] + sentence + " " + prompt[at:]
+        else:
+            rest = prompt[at + len(_SHOT_LABEL):].lstrip(" ")
+            body = prompt[:at] + _SHOT_LABEL + " " + sentence + (" " + rest if rest and not rest.startswith(("\n", "\r")) else rest)
+    elif (at := prompt.find(_SHOT_LABEL)) >= 0:
         rest = prompt[at + len(_SHOT_LABEL):].lstrip(" ")
         body = prompt[:at] + _SHOT_LABEL + " " + sentence + (" " + rest if rest and not rest.startswith(("\n", "\r")) else rest)
     else:
         body = sentence + " " + prompt.lstrip(" ")
-    if any(entry["frame"] == 0 for entry in plan.get("keyframes", ())):
+    if plan.get("target_id", FRAMES_TARGET_ID) == FRAMES_TARGET_ID and any(entry["frame"] == 0 for entry in plan.get("keyframes", ())):
         body = ("For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced."
                 + newline + newline + body)
     return body

@@ -59,7 +59,7 @@ class _SceneError(Exception):
 
 
 def _scene_cache_dir() -> Path:
-    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    base = _local_data.records_base()
     return Path(state_root(Path(base) / "hermes")) / "scene"
 
 

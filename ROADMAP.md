@@ -10,8 +10,9 @@ Release requirements met and proven on a real install. Each line states the requ
 
 - A backend package missing from the baseline list ships dead in the installed plugin; packaging must be complete.
 - A new user needs a first success before downloading 40+ GB of models.
+- A shipped skill routes Hermes from what the artist asks for to the right Continuo tools.
 - API keys must never appear in logs, recipes or jobs; a leak would fail catalog rules.
-- Catalog README and tool texts tell the truth: ComfyUI is asked at 127.0.0.1:8188, then 127.0.0.1:8000, or at the address in FILM_SUITE_COMFY_URL, exports land in the project output folder, BUILD-INFO counts the real tree.
+- Catalog README and tool texts tell the truth: ComfyUI is asked at 127.0.0.1:8188, then 127.0.0.1:8000, or at the address set in Hermes Settings, exports land in the project output folder, BUILD-INFO counts the real tree.
 - Ctrl+K 'Continuo' finds nothing and the sidebar may need a restart after install: a first-minutes break on a fresh marketplace install.
 - Extra files under hermes/film-suite make state_root refuse, which breaks the plugin at load.
 - Fresh install needs two restarts before audio analysis works; new users install on a fresh machine.
@@ -24,7 +25,6 @@ Release requirements met and proven on a real install. Each line states the requ
 - The catalog PR needs a public repo anyway; a clean repo with a roadmap lets invited people review and help.
 - The installer must not overwrite local files or silently restart Hermes and must allow rollback; that decides catalog acceptance.
 - Waveform and transport must appear even when an analysis dependency is missing; otherwise the page is blank for a fresh user.
-- With ~180 filmsuite tools Hermes needs a shipped skill routing intent to tools, or the agent path is unreliable for new users; none in the repo.
 - Without ffmpeg/ffprobe, the Sample film says that ffmpeg is missing and how to fix it; no half-made sample is published, and a retry works after ffmpeg is there.
 
 ### Nothing gets lost, nothing crashes
@@ -49,6 +49,7 @@ Release requirements met and proven on a real install. Each line states the requ
 - P-H3 Image workflows offer a Steps control the artist can set (manifest slot + descriptor control), like Krea 2.
 - Previz Undo restores exactly what the proposal changed: never erases newer figures or sets, and an undone lens stays undone.
 - Previz camera edits use the shot record's revision check; a stale edit is refused and shown, never overwrites a newer lens.
+- The ComfyUI address and the ComfyUI and models folders are set in Hermes Settings › Plugins › Continuo; environment variables override them.
 - The render queue never creates a missing project folder (an unplugged drive or a moved folder stays absent); it writes only into an existing, opened project.
 - Unsaved work must be visible and closing must ask, otherwise data loss.
 - With an unsure meter the note 'Beats only · meter unsure' is fully readable (not clipped by the Markers row), and no bar-only controls ('Bar 1' flag, 'Jump n bars') claim bars that do not exist.
@@ -59,11 +60,15 @@ Release requirements met and proven on a real install. Each line states the requ
 - A character introduced with an article in action ("A FERRYMAN (70s)") is the same person as FERRYMAN, not a third character.
 - A library clip dropped on Cut lands on V2 at frame 20 instead of the drop point; a new user hits this in the first minute.
 - A still picture from the project's folders shows in Cut's viewer and plays in the cut (not black).
+- Deliver refuses offline sources on the page like Hermes does: Check before render reads the same export check, and the renderer never reads a cached still whose file is gone.
 - Every cut (timeline) of the project shows as its own item in Media, like Resolve's Media Pool and Premiere's Project panel: open, duplicate, rename, drag into another cut (nested), by hand and by Hermes.
 - Figure controls in Previz change what they show: the selected shot's pose/position, not the whole scene.
+- Hermes reaches Use in Cut with the song map by tools alone: music_open/analysis hand out map_id (and evidence_id) or use_in_cut resolves them from path+range; music_analysis does not fail for a stored analysis whose file moved (keyed by sha256).
+- Hermes reads and writes the settings of the model the artist sees: continuo_image_state names the active model and its fields (Qwen-Image 2.1: seed/steps/guidance/sampler); set_seed etc. change the visible field, or refuse naming the model.
+- Import on the Audio page imports sounds: the dialog is titled for sounds and filters wav/mp3/flac/ogg/m4a/aac (not "Import picture" with picture filter); a song dropped into the project sound folder appears in Media.
+- Opening Video on a fresh Sample film writes nothing: no music track, no keyframe slots; beat-guided slots appear only after Use in Video and stay inside the shot length.
 - Playback with a moving playhead is a basic expectation of the Audio page.
 - Render settings with all formats producing a file is core to delivering a cut.
-- Switching the shown cut shows that cut's subtitles at once (ST1 and viewer follow the cut, not the project).
 - The sections band shows named song parts (Intro, Verse, Chorus, Bridge, Outro from the song map), not letter segments; inspector Markers and Hermes read the same.
 - Track set and Clip/Audio/History inspector are core Cut structure.
 - Use in Cut is still gated on analysis, so the no-analysis path is broken in a core flow.
@@ -112,6 +117,7 @@ Built; being proven on a real install or finished.
 ### Installs and runs on a fresh machine
 
 - Cold dependency install unproven; green can hide failed preparation.
+- Runs on macOS with Apple Silicon: contributed, and run by the contributor on macOS 26.5; the Continuo pane in Hermes Desktop on a Mac is not yet tried.
 
 ### Song to cut (Audio, Music, Cut)
 
@@ -125,29 +131,35 @@ Built; being proven on a real install or finished.
 
 - Generate must work with the project output folder on a fresh project; the 'No output folder' path still exists.
 
+### Polished UI: one component per job, every page
+
+- Visible on the main demo path (Hermes generates while Image is open).
+
 ### Other
 
-- H3 as an image/edit model (P-H3-Image, image LoRA): promising for consistency with our video model; after the release, research runs now in VIDEO-H3 section 7.
+- H3 as a local picture and edit model: P-H3-Image (Pruna, few steps, edit with up to 9 references) and the picture LoRA on the normal H3 model.
 
 ## Later
 
 Planned for the release.
 
-### Nothing gets lost, nothing crashes
-
-- User feedback: Windows desktop ComfyUI defaults to port 8000; remote ComfyUI hosts are common.
-
 ### Song to cut (Audio, Music, Cut)
 
+- A new user installs from the GitHub URL without being stopped: the Hermes install scan verdict is explained in the README (answer y / --force) and the avoidable findings are reduced.
 - Audio is a demo page and still reads as bolted-on parts; one approved coherent layout is needed.
-- Switching the shown cut shows that cut's subtitles at once (ST1 and viewer follow the cut, not the project).
+
+### Image
+
+- Preview while generating is part of pro image UX; Krea already proves the path.
 
 ### Polished UI: one component per job, every page
 
 - A design gate in run-gate (internal) measures the inventory parts on every page (size, radius, spacing, label placement, handle presence) against DESIGN.md (internal) and fails on a deviation.
 - Controls follow one size and label rule: square icon buttons, labels outside fields, one primary action per panel, disabled controls say why, empty states and job states use the shared components.
+- Empty areas show their button text (found blank, for example Import… in an empty Media column).
+- Visible on the main demo path (Hermes generates while Image is open).
 - Words on screen follow the vocabulary and prose rules on every page (no developer words, one spelling, short labels, truthful counts and times).
 
 ---
 
-165 release musts in the plan; 78 of them are internal working notes and are not listed here.
+166 release musts in the plan; 73 of them are internal working notes and are not listed here.

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 def prepared_cache_dir() -> Path:
-    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    base = _local_data.records_base()
     directory = state_root(Path(base) / "hermes") / "prepared"
     directory.mkdir(parents=True, exist_ok=True)
     return directory

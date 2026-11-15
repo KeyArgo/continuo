@@ -26,6 +26,11 @@ _engine_process_spec = importlib.util.spec_from_file_location(
     "film_suite_engine_process", Path(__file__).resolve().parents[1] / "engine_process" / "__init__.py")
 engine_process = importlib.util.module_from_spec(_engine_process_spec)
 _engine_process_spec.loader.exec_module(engine_process)
+# w41-mac-b item 1 (PR #2 by @ShawnCRMer): the one rule for this machine's own folders (dashboard/local_data).
+_local_data_spec = importlib.util.spec_from_file_location(
+    "film_suite_local_data", Path(__file__).resolve().parents[1] / "local_data" / "__init__.py")
+local_data = importlib.util.module_from_spec(_local_data_spec)
+_local_data_spec.loader.exec_module(local_data)
 
 ENGINE_SCHEMA = "studio.inpaint-engine/1"
 REQUEST_SCHEMA = "studio.inpaint-runner-request/1"
@@ -53,7 +58,7 @@ def engine_dir() -> Path:
     override = os.environ.get("FILM_SUITE_INPAINT_ENGINE_DIR")
     if override:
         return Path(override)
-    base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    base = local_data.engines_base()
     return Path(base) / "hermes" / "film-suite" / "engines" / ENGINE_NAME
 
 
@@ -82,9 +87,12 @@ def comfy_queue_state() -> str:
 
 def choose_device(queue: str) -> str:
     forced = os.environ.get("FILM_SUITE_INPAINT_DEVICE")
-    if forced in {"cuda", "cpu"}:
+    if forced in {"cuda", "mps", "cpu"}:
         return forced
-    return "cuda" if queue == "empty" else "cpu"
+    # macOS (PR #2 by @ShawnCRMer): Apple Silicon has no CUDA; its GPU is Metal (torch "mps"), shared with ComfyUI
+    # the same way. Elsewhere unchanged.
+    gpu = "mps" if local_data.is_macos() else "cuda"
+    return gpu if queue == "empty" else "cpu"
 
 
 def missing() -> InpaintEngineError:

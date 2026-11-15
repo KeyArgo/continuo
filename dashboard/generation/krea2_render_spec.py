@@ -69,7 +69,21 @@ KREA_FILES = {"encoder": _TURBO["encoder"], "vae": _TURBO["vae"]}
 SAMPLERS = ("euler", "euler_cfg_pp", "euler_ancestral", "euler_ancestral_cfg_pp", "heun", "heunpp2", "exp_heun_2_x0", "exp_heun_2_x0_sde", "dpm_2", "dpm_2_ancestral", "lms", "dpm_fast", "dpm_adaptive", "dpmpp_2s_ancestral", "dpmpp_2s_ancestral_cfg_pp", "dpmpp_sde", "dpmpp_sde_gpu", "dpmpp_2m", "dpmpp_2m_cfg_pp", "dpmpp_2m_sde", "dpmpp_2m_sde_gpu", "dpmpp_2m_sde_heun", "dpmpp_2m_sde_heun_gpu", "dpmpp_3m_sde", "dpmpp_3m_sde_gpu", "ddpm", "lcm", "ipndm", "ipndm_v", "deis", "cfgpp_ud10_ab", "res_multistep", "res_multistep_cfg_pp", "res_multistep_ancestral", "res_multistep_ancestral_cfg_pp", "gradient_estimation", "gradient_estimation_cfg_pp", "er_sde", "seeds_2", "seeds_3", "sa_solver", "sa_solver_pece", "ddim", "uni_pc", "uni_pc_bh2")
 SCHEDULERS = ("simple", "sgm_uniform", "karras", "exponential", "ddim_uniform", "beta", "normal", "linear_quadratic", "kl_optimal")
 CATALOG = Path(__file__).resolve().parents[1] / "image_builder" / "krea2-builder-catalog.v1.json"
-MODEL_ROOT = _comfy_root() / "models"  # FILM_SUITE_COMFY_ROOT (generation/comfy_root.py), the Suite's one ComfyUI root
+# The models folder ComfyUI loads from: <ComfyUI root>/models, the root read at every use (generation/comfy_root.py:
+# FILM_SUITE_COMFY_ROOT, else the comfy_root setting, else the default), so a saved folder needs no restart
+# (lane w41-folders item 1). ``MODEL_ROOT`` stays readable as before (module __getattr__); a test that sets the
+# attribute on the module still decides the folder.
+
+
+def models_folder() -> Path:
+    patched = globals().get("MODEL_ROOT")
+    return Path(patched) if patched is not None else _comfy_root() / "models"
+
+
+def __getattr__(name: str) -> Any:
+    if name == "MODEL_ROOT":
+        return _comfy_root() / "models"
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def default_spec(seed: int, width: int, height: int) -> dict[str, Any]:
@@ -102,7 +116,7 @@ class MissingModelFile(ValueError):
 def _available(kind: str, name: Any, model_root: Path | None) -> bool:
     # The live engine list counts only for the Suite's own root; an explicit root (tests, a
     # second install) is answered from its folders plus its extra_model_paths.yaml.
-    return _availability.present(kind, name, MODEL_ROOT if model_root is None else model_root, live=model_root is None)
+    return _availability.present(kind, name, models_folder() if model_root is None else model_root, live=model_root is None)
 
 
 def missing_files(value: Any, *, model_root: Path | None = None) -> list[dict[str, str]]:

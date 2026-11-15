@@ -25,7 +25,7 @@ class JobsDismissRequest(BaseModel):
 
 
 def _jobs_dismissed_path(owner_scope: str) -> Path:
-    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    base = _local_data.records_base()
     leaf = owner_scope[len("film_owner:"):]
     return Path(state_root(Path(base) / "hermes")) / "jobs-dismissed" / f"jobs-dismissed-{leaf}.json"
 

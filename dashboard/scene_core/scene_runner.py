@@ -23,6 +23,11 @@ import sys
 import time
 from pathlib import Path
 
+# macOS (PR #2 by @ShawnCRMer): an op Metal (MPS) lacks runs on the CPU instead of failing the job. Set before torch
+# is imported (inside main); only on macOS, so Windows and Linux runs see no new variable.
+if sys.platform == "darwin":
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
@@ -242,6 +247,8 @@ def main() -> int:
     _close_network()
     device = req.get("device", "cpu")
     if device == "cuda" and not torch.cuda.is_available():
+        device = "cpu"
+    if device == "mps" and not (getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available()):
         device = "cpu"
     if device == "cpu":
         torch.set_num_threads(max(1, min(8, torch.get_num_threads())))

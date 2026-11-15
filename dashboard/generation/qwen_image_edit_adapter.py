@@ -30,6 +30,7 @@ from typing import Any
 from .image_contract import PROVIDER_ID, ContractError, sha256, validate_snapshot
 from .image_edit_contract import EDIT_TARGETS, QWEN_TARGET_ID
 from .comfy_failure import failure_reason as _comfy_failure_reason  # lane w24-rest (GEM-056)
+from . import qwen_enhancer_guard as _guard  # w41-qwen: shared with the catalog targets
 
 TARGET_ID = QWEN_TARGET_ID
 _TARGET = EDIT_TARGETS[TARGET_ID]
@@ -59,19 +60,12 @@ OUTPUT_NODE = "477"
 SENT_PROMPT_NODE = "506"
 SAMPLER_NODE = "487"
 NODE_COUNT = 26
-# Enhancer guard (p11-imgb, owner's live proof 31.10.): the enhancer's rewrite (cleaned by RegexReplace 516)
-# is sometimes token soup ("a a the a the ...", 6 of 29 runs, all Restyle; the seed is fixed, so a given
-# picture + text collapses every time) or grounding JSON ("bbox_2d"). With the enhancer on, the compiled
-# graph gains two NATIVE nodes (the pinned graph and its sha stay unchanged): RegexMatch (re.search,
-# case-insensitive + dotall) on the cleaned text, and a lazy ComfySwitchNode that passes that text when it
-# matches, else the plain instruction 502; the enhancer switch 505's on_true points at the guard. The pattern
-# refuses grounding JSON, 8 article-like tokens in a row and texts with fewer than 6 words of 4+ letters;
-# checked by the owner on all 29 stored enhancer outputs (29 agree) and timed on 30 000 characters.
-ENHANCER_GUARD_PATTERN = (
-    r'^(?!.*bbox_2d)(?!.*(?:\b(?:a|an|the|by)\b[\s,."]*){8})(?=(?:.*?\b[A-Za-z]{4,}\b){6})'
-)
-ENHANCER_GUARD_MATCH_NODE_ID = "911"
-ENHANCER_GUARD_SWITCH_NODE_ID = "912"
+# Enhancer guard (p11-imgb): RegexMatch + lazy ComfySwitchNode on the cleaned rewrite, fallback the plain
+# instruction. w41-qwen: the pattern and the insertion moved to qwen_enhancer_guard.py (unchanged), so the
+# catalog targets (qwen_image_workflow_adapter) reuse the same guard.
+ENHANCER_GUARD_PATTERN = _guard.PATTERN
+ENHANCER_GUARD_MATCH_NODE_ID = _guard.MATCH_NODE_ID
+ENHANCER_GUARD_SWITCH_NODE_ID = _guard.SWITCH_NODE_ID
 ENHANCER_SWITCH_NODE = "505"
 ENHANCER_SEED_POINTER = "/504/inputs/sampling_mode.seed"
 
@@ -225,20 +219,7 @@ def validate_assets(manifest: Mapping[str, Any], graph: Mapping[str, Any]) -> No
 def insert_enhancer_guard(compiled: dict[str, Any], switch_node: str) -> None:
     """Route ``switch_node``'s on_true (the cleaned enhancer text) through RegexMatch + ComfySwitchNode, with
     its on_false (the plain instruction) as the fallback. In place; refuses a changed insertion point."""
-    switch = compiled.get(switch_node)
-    if not isinstance(switch, dict) or switch.get("class_type") != "ComfySwitchNode":
-        raise QwenEditAdapterError("enhancer guard insertion point changed")
-    cleaned, plain = switch["inputs"].get("on_true"), switch["inputs"].get("on_false")
-    if not (isinstance(cleaned, list) and len(cleaned) == 2 and isinstance(plain, list) and len(plain) == 2):
-        raise QwenEditAdapterError("enhancer guard insertion point changed")
-    if ENHANCER_GUARD_MATCH_NODE_ID in compiled or ENHANCER_GUARD_SWITCH_NODE_ID in compiled:
-        raise QwenEditAdapterError("enhancer guard node id taken")
-    compiled[ENHANCER_GUARD_MATCH_NODE_ID] = {"class_type": "RegexMatch", "inputs": {
-        "string": list(cleaned), "regex_pattern": ENHANCER_GUARD_PATTERN,
-        "case_insensitive": True, "multiline": False, "dotall": True}}
-    compiled[ENHANCER_GUARD_SWITCH_NODE_ID] = {"class_type": "ComfySwitchNode", "inputs": {
-        "switch": [ENHANCER_GUARD_MATCH_NODE_ID, 0], "on_true": list(cleaned), "on_false": list(plain)}}
-    switch["inputs"]["on_true"] = [ENHANCER_GUARD_SWITCH_NODE_ID, 0]
+    _guard.insert(compiled, switch_node, QwenEditAdapterError)
 
 
 # p13-img (IMG-129/131): the selection reaches the sampler as a latent noise mask. Compile-time nodes (the pinned
