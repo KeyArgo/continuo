@@ -1,6 +1,7 @@
 """Install the Film Suite song-analysis engine (lane w6-song) into its OWN uv venv.
 
-    python scripts/install-song-engine.py [--engine-dir DIR] [--cpu-only] [--source-root DIR] [--smoke AUDIO]
+    python scripts/install-song-engine.py [--engine-dir DIR] [--models-dir DIR] [--no-download] [--cpu-only]
+                                          [--source-root DIR] [--smoke AUDIO]
 
 Creates ``%LOCALAPPDATA%/hermes/film-suite/engines/song-analysis/``:
     venv/          uv venv, the lock's python, hash-locked stack (scripts/engine-locks) (never the Hermes venv,
@@ -10,18 +11,21 @@ Creates ``%LOCALAPPDATA%/hermes/film-suite/engines/song-analysis/``:
     vendor/adtof_pytorch/   the four source files of that checkout (sha256-checked; the repository's
                    bundled weights are never checked out or copied)
     engine.json    record the backend reads (music_core/song_map.locate), schema
-                   studio.song-engine/1: python, runner + sha256, every weight path + sha256
-                   (checked against candidates.json), versions, pins, sources (URL + commit)
+                   studio.song-engine/1: python, runner + sha256, every model file's path + sha256,
+                   versions, pins, sources (URL + commit)
+and fills ``engines/models/`` (``--models-dir``) with the model files the runner reads: ADTOF, RMVPE,
+Qwen3-ForcedAligner-0.6B and SongFormer, 5.0 GB, each from its publisher at one pinned revision
+(``scripts/engine_models.py``).  A file that is already there is checked and kept; ``--no-download`` fetches nothing
+and lists what is missing.
 
 Third-party code is fetched by this installer at a pinned full commit (table SOURCES) from its
 upstream URL, or from ``--source-root DIR`` (one local clone per repository name) for offline use.
 A wrong sha or a commit the remote no longer has is refused.  ADTOF-pytorch has no licence: its
 code never enters the Film Suite repository, only this engine folder.
 
-Weights are never downloaded or copied: they are read in place from
-``engines/candidates`` and every file's sha256 must equal candidates.json.  Idempotent:
-re-running re-installs from the lock (--require-hashes) and re-checks every hash.  Remove the directory to uninstall;
-the Music page then names each map track "Not installed".
+Every model file must have its pinned sha256; a file with another one is refused, never replaced.  Idempotent:
+re-running re-installs from the lock (--require-hashes), re-checks every hash and resumes an interrupted download.
+Remove the directory to uninstall; the Music page then names each map track "Not installed".
 Decisions and numbers: eval/bench/RESULTS.md (B1 SongFormer, B2 ADTOF, B3 RMVPE, B4 Qwen3-FA).
 """
 from __future__ import annotations
@@ -43,6 +47,9 @@ _spec.loader.exec_module(pinned_source)
 _env_spec = importlib.util.spec_from_file_location("film_suite_engine_env", Path(__file__).resolve().parent / "engine_env.py")
 engine_env = importlib.util.module_from_spec(_env_spec)
 _env_spec.loader.exec_module(engine_env)
+_models_spec = importlib.util.spec_from_file_location("film_suite_engine_models", Path(__file__).resolve().parent / "engine_models.py")
+engine_models = importlib.util.module_from_spec(_models_spec)
+_models_spec.loader.exec_module(engine_models)
 RUNNER_SRC = (ROOT / "backend" / "film-suite" / "dashboard" if (ROOT / "backend" / "film-suite" / "dashboard").is_dir() else ROOT / "dashboard") / "music_core" / "song_map_runner.py"
 SCHEMA = "studio.song-engine/1"
 # Packages: ONLY the hash lock scripts/engine-locks/song-analysis.txt (CUDA) or .cpu.txt (--cpu-only), compiled from
@@ -65,21 +72,9 @@ ADTOF_SOURCES = {
     "model.py": "7537ddd224996fee8eeeade3c2965ba2d502465a724b27a38a41b97c85e62865",
     "post_processing.py": "b6b4a41fe5f13c61b35eb2dc4cad5e2fbc6c4ac47a9c9046cf9d0aced697db66",
 }
-# candidates.json key -> files the runner reads (all sha256-checked)
-WEIGHTS = {
-    "adtof": ("adtof-pytorch", ["adtof_frame_rnn_pytorch_weights.pth"]),
-    "rmvpe": ("rmvpe", ["rmvpe.onnx"]),
-    "qwen3_aligner": ("qwen3-forcedaligner-0.6b", ["config.json", "model.safetensors", "preprocessor_config.json",
-                                                   "tokenizer_config.json", "vocab.json", "merges.txt",
-                                                   "chat_template.json", "generation_config.json"]),
-    "songformer": ("songformer", ["model.safetensors", "config.json", "configuration_songformer.py", "model.py",
-                                  "model_config.py", "modeling_songformer.py", "msd_stats.json", "muq_config2.json",
-                                  "musicfm/model/__init__.py", "musicfm/model/musicfm_25hz.py",
-                                  "musicfm/modules/__init__.py", "musicfm/modules/conv.py",
-                                  "musicfm/modules/features.py", "musicfm/modules/flash_conformer.py",
-                                  "musicfm/modules/random_quantizer.py", "postprocessing/functional.py",
-                                  "postprocessing/helpers.py"]),
-}
+# key in engine.json -> folder of the model table (scripts/engine_models.py: sources, bytes and sha256 per file)
+WEIGHTS = {"adtof": "adtof-pytorch", "rmvpe": "rmvpe", "qwen3_aligner": "qwen3-forcedaligner-0.6b",
+           "songformer": "songformer"}
 ENGINE_IDS = {"drums": "adtof-frame-rnn", "melody": "rmvpe-onnx", "words": "qwen3-forcedaligner-0.6b",
               "sections": "songformer-hx8", "novelty": "foote-beats-librosa", "loudness": "rms-librosa",
               "events": "rms-librosa"}
@@ -100,9 +95,10 @@ def default_engine_dir() -> Path:
     return Path(base) / "hermes" / "film-suite" / "engines" / "song-analysis"
 
 
-def default_candidates_dir() -> Path:
-    base = _machine_local()
-    return Path(base) / "hermes" / "film-suite" / "engines" / "candidates"
+def default_models_dir() -> Path:
+    """``engines/models``; an install from before this folder had a name keeps its ``engines/candidates``."""
+    engines = Path(_machine_local()) / "hermes" / "film-suite" / "engines"
+    return engines / "candidates" if (engines / "candidates").is_dir() else engines / "models"
 
 
 def fetch_sources(edir: Path, source_root: Path | None = None, sources: dict | None = None) -> dict:
@@ -140,28 +136,15 @@ def venv_python(venv: Path) -> Path:
     return venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
-def check_weights(cand_dir: Path) -> dict:
-    """Every weight file the runner reads, with its sha256 equal to candidates.json (never copied)."""
-    table = json.loads((cand_dir / "candidates.json").read_text(encoding="utf-8"))
-    out = {}
-    for key, (cand, files) in WEIGHTS.items():
-        entry = table.get(cand) or {}
-        rows = {}
-        for rel in files:
-            want = ((entry.get("files") or {}).get(rel) or {}).get("sha256")
-            path = cand_dir / cand / rel
-            if not want:
-                raise SystemExit(f"candidates.json has no sha256 for {cand}/{rel}")
-            if not path.is_file():
-                raise SystemExit(f"missing weight file {path}")
-            got = sha256(path)
-            if got != want:
-                raise SystemExit(f"sha256 mismatch {path}: {got} != {want}")
-            rows[rel] = {"path": str(path), "sha256": got}
-            print(f"weight ok: {cand}/{rel}", flush=True)
-        out[key] = {"candidate": cand, "revision": entry.get("revision"), "licence": entry.get("licence"),
-                    "dir": str(cand_dir / cand), "files": rows}
-    return out
+def check_weights(models_dir: Path, *, download: bool = True, opener=None, models: dict | None = None) -> dict:
+    """Every model file the runner reads, in ``models_dir`` with its pinned sha256; a missing one is downloaded
+    (``engine_models.ensure``) unless ``download`` is off.  ``models`` replaces the pinned table (tests)."""
+    table = engine_models.MODELS if models is None else models
+    found = engine_models.ensure(models_dir, tuple(WEIGHTS.values()), download=download, opener=opener,
+                                 log=lambda line: print(line, flush=True), models=table)
+    return {key: {"candidate": folder, "revision": table[folder]["revision"], "licence": table[folder]["licence"],
+                  "dir": str(Path(models_dir) / folder), "files": found[folder]}
+            for key, folder in WEIGHTS.items()}
 
 
 def vendor_adtof(src: Path, edir: Path) -> Path:
@@ -181,7 +164,10 @@ def vendor_adtof(src: Path, edir: Path) -> Path:
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--engine-dir", type=Path, default=default_engine_dir())
-    ap.add_argument("--candidates-dir", type=Path, default=default_candidates_dir())
+    ap.add_argument("--models-dir", "--candidates-dir", dest="models_dir", type=Path, default=default_models_dir(),
+                    help=f"where the model files live ({engine_models.gigabytes(engine_models.total_bytes('song'))}; "
+                         "downloaded there when missing)")
+    ap.add_argument("--no-download", action="store_true", help="fetch no model file: list the missing ones and stop")
     ap.add_argument("--source-root", type=Path, default=None,
                     help="offline: folder of local clones (one per SOURCES name); default is each pinned URL")
     ap.add_argument("--cpu-only", action="store_true", help="CPU torch wheels (no CUDA); macOS has one lock (MPS or CPU at run time) and ignores it")
@@ -192,7 +178,7 @@ def main(argv: list[str]) -> int:
         raise SystemExit("uv not found on PATH")
     edir: Path = args.engine_dir
     edir.mkdir(parents=True, exist_ok=True)
-    weights = check_weights(args.candidates_dir)
+    weights = check_weights(args.models_dir, download=not args.no_download)
     venv = edir / "venv"
     if not venv_python(venv).is_file():
         run([uv, "venv", "-p", PYTHON, str(venv)])

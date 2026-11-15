@@ -21,7 +21,7 @@ Drag the picture here.
 **Versions**
 - Hermes (`hermes --version`):
 - Continuo build (`source_commit` in `BUILD-INFO.json` of the plugin folder):
-- Windows version:
+- Operating system and version:
 - ComfyUI used (yes or no), and the workflow if it is about a model:
 
 **By hand or by Hermes**

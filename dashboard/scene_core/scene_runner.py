@@ -169,7 +169,12 @@ def run_sync(req, device):
     a = _audio(req["video_path"], sr=48000)
     if a is None:
         return {"available": False, "reason": "no_sound"}
-    fl = _mediapipe(req, device)
+    try:
+        fl = _mediapipe(req, device)
+    except ModuleNotFoundError as exc:  # the landmarker code is ComfyUI's own: no ComfyUI in the ComfyUI folder
+        if (exc.name or "").split(".")[0] not in ("comfy", "comfy_extras"):
+            raise
+        return {"available": False, "reason": "no_comfyui"}
     faces = []
     with torch.no_grad():
         for i in range(0, len(rgb), 32):

@@ -1,17 +1,21 @@
 """Install the Film Suite LaMa inpaint engine (lane p13-img): the pre-fill of Image Remove.
 
-    python scripts/install-lama-engine.py --reuse-venv VENV --model BIG_LAMA_PT [--engine-dir DIR]
+    python scripts/install-lama-engine.py [--reuse-venv VENV] [--model BIG_LAMA_PT] [--models-dir DIR]
+                                          [--no-download] [--engine-dir DIR]
 
 Writes ``%LOCALAPPDATA%/hermes/film-suite/engines/lama-inpaint/`` (or ``--engine-dir``):
     runner.py      copy of backend/film-suite/dashboard/inpaint_core/lama_runner.py
     engine.json    record the backend reads (inpaint_core/lama_engine.locate), schema studio.inpaint-engine/1
 
-Reuse mode (the only mode): NOTHING is downloaded or installed.  ``--reuse-venv`` names an EXISTING venv that
-already has CUDA torch, numpy and Pillow (the scene-analysis engine's venv, torch 2.11.0+cu128); the installer
-imports them once with that python to prove it and records the versions.  ``--model`` is the big-lama
-TorchScript read IN PLACE (ComfyUI ``models/inpaint/big-lama.pt``, installed with the artist's consent); its
-sha256 must be 344c77bb... (refused otherwise).  The model is loaded with ``torch.jit.load`` (spandrel breaks its
-colours).  Idempotent.  Remove the directory to uninstall: Remove then refuses with ``inpaint_engine_missing``.
+No Python environment of its own: it runs in an EXISTING venv with torch, numpy and Pillow.  Without
+``--reuse-venv`` that is the scene engine's (``engines/scene-analysis/venv``; run ``install-scene-engine.py`` first);
+the installer imports the three once with that python to prove it and records the versions.
+
+The model is the big-lama TorchScript (206 MB, sha256 344c77bb..., refused otherwise).  Without ``--model`` it is
+read in place from ComfyUI's ``models/inpaint/big-lama.pt`` when that is the pinned file, else fetched into
+``engines/models/big-lama/`` (``--models-dir``) from its pinned source (``scripts/engine_models.py``);
+``--no-download`` fetches nothing and names the missing file.  It is loaded with ``torch.jit.load`` (spandrel breaks
+its colours).  Idempotent.  Remove the directory to uninstall: Remove then refuses with ``inpaint_engine_missing``.
 """
 from __future__ import annotations
 
@@ -46,6 +50,24 @@ def _load_engine_process():
 
 
 engine_process = _load_engine_process()
+_models_spec = importlib.util.spec_from_file_location("film_suite_engine_models", Path(__file__).resolve().parent / "engine_models.py")
+engine_models = importlib.util.module_from_spec(_models_spec)
+_models_spec.loader.exec_module(engine_models)
+
+
+def _comfy_root() -> Path:
+    """The Suite's one ComfyUI folder (``generation/comfy_root.py``); an unusable saved setting falls back to the usual install."""
+    spec = importlib.util.spec_from_file_location("film_suite_comfy_root", RUNNER_SOURCE.parents[1] / "generation" / "comfy_root.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        return module.comfy_root()
+    except ValueError:
+        return module.default_comfy_root()
+
+
+COMFY_ROOT = _comfy_root()
+MODEL_FILE = "big-lama.pt"
 
 
 def _machine_local() -> str:
@@ -61,6 +83,36 @@ def _machine_local() -> str:
 def default_engine_dir() -> Path:
     base = _machine_local()
     return Path(base) / "hermes" / "film-suite" / "engines" / "lama-inpaint"
+
+
+def default_models_dir() -> Path:
+    """``engines/models``; an install from before this folder had a name keeps its ``engines/candidates``."""
+    engines = Path(_machine_local()) / "hermes" / "film-suite" / "engines"
+    return engines / "candidates" if (engines / "candidates").is_dir() else engines / "models"
+
+
+def venv_path(explicit: Path | None, engine_dir: Path) -> Path:
+    """``--reuse-venv``, else the scene engine's venv beside this engine's folder."""
+    if explicit is not None:
+        return Path(explicit)
+    scene = Path(engine_dir).parent / "scene-analysis" / "venv"
+    if not scene.is_dir():
+        raise SystemExit(f"no Python environment to run in: {scene} does not exist. Run "
+                         "`python scripts/install-scene-engine.py` first, or name a venv with torch, numpy and Pillow: --reuse-venv VENV")
+    return scene
+
+
+def model_path(explicit: Path | None, models_dir: Path, *, download: bool = True, opener=None, models: dict | None = None) -> Path:
+    """``--model``, else ComfyUI's copy when it is the pinned file (read in place), else the installer's own,
+    downloaded when missing (``engine_models.ensure``).  ``models`` replaces the pinned table (tests)."""
+    if explicit is not None:
+        return Path(explicit)
+    in_comfy = COMFY_ROOT / "models" / "inpaint" / MODEL_FILE
+    if in_comfy.is_file() and sha256(in_comfy) == MODEL_SHA256:
+        return in_comfy
+    found = engine_models.ensure(models_dir, engine_models.SETS["lama"], download=download, opener=opener,
+                                 log=lambda line: print(line, flush=True), models=models)
+    return Path(found["big-lama"][MODEL_FILE]["path"])
 
 
 def sha256(path: Path) -> str:
@@ -117,10 +169,16 @@ def install(engine_dir: Path, venv: Path, model: Path, *, check_venv: bool = Tru
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--engine-dir", type=Path, default=default_engine_dir())
-    ap.add_argument("--reuse-venv", type=Path, required=True, help="an existing venv with CUDA torch, numpy, Pillow")
-    ap.add_argument("--model", type=Path, required=True, help="big-lama.pt (TorchScript), read in place")
+    ap.add_argument("--reuse-venv", type=Path, default=None,
+                    help="an existing venv with torch, numpy and Pillow (default: the scene engine's)")
+    ap.add_argument("--model", type=Path, default=None,
+                    help="big-lama.pt (TorchScript), read in place (default: ComfyUI's copy, else downloaded)")
+    ap.add_argument("--models-dir", type=Path, default=default_models_dir(),
+                    help=f"where a downloaded model goes ({engine_models.gigabytes(engine_models.total_bytes('lama'))})")
+    ap.add_argument("--no-download", action="store_true", help="fetch no model file: name the missing one and stop")
     args = ap.parse_args(argv)
-    record = install(args.engine_dir, args.reuse_venv, args.model)
+    venv = venv_path(args.reuse_venv, args.engine_dir)
+    record = install(args.engine_dir, venv, model_path(args.model, args.models_dir, download=not args.no_download))
     print(json.dumps(record, indent=2))
     return 0
 

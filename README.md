@@ -269,28 +269,32 @@ Not installed by this plugin.
 |:---|:---|
 | ffmpeg | required for Cut, Deliver and Audio; found through FFMPEG_PATH, then PATH, then C:\ffmpeg\bin. Tested with ffmpeg 7.1.1 (gyan.dev full build, 0.44 GB measured). |
 | ComfyUI | optional; only for generating images, video, music and voice. Root: FILM_SUITE_COMFY_ROOT when set, else the plugin setting comfy_root (Hermes Settings > Plugins > Continuo; an existing absolute local folder), otherwise the usual install (Documents\ComfyUI-Easy-Install\ComfyUI on Windows); models elsewhere: FILM_SUITE_COMFY_MODELS when set, else the plugin setting comfy_models; both folders are set by the artist only. Server: FILM_SUITE_COMFY_URL when set, else the plugin setting comfy_url (Hermes Settings > Plugins > Continuo; origin only: no credentials, path or query; another machine receives the prompts and pictures), otherwise this machine only, http://127.0.0.1:8188 then http://127.0.0.1:8000 (the first that answers). The ComfyUI folder without models, custom nodes and outputs measured 0.27 GB; its Python environment, custom nodes and models need extra space (model sizes above). |
-| optional engines | beat tracking (measured 4.3 GB with its torch environment), scene analysis (0.67 GB), song map (0.16 GB), speech detection (2.3 MB), inpainting. Not installed by this plugin; features that need one show it as unavailable. |
+| optional engines | beat tracking, song map, scene analysis, object removal (LaMa) and speech detection. Not installed with this plugin: each has its own installer, which downloads its Python environment and model files when you run it (sizes under Optional analysis engines). Features that need one show it as not installed. |
 
 ### Optional analysis engines
 
-Better beat tracking, song maps, scene analysis, object removal and dialogue detection, each a one-line install.
+Better beat tracking, song maps, scene analysis, object removal and dialogue detection. Nothing below is installed with
+Continuo: each engine has its own installer, which downloads what it needs when you run it.
 
 **Engines and how to install them**
 
 <details>
 <summary>Show</summary>
 
-Run these from the plugin directory. Beat, song and scene create their own Python environments; they never modify the Hermes environment. Sizes below are the existing measurements, not necessarily the total download or disk use of a new installation.
+Run these from the plugin directory; they need `uv` and `git` on the PATH. Beat, song and scene create their own Python environments and never modify the Hermes environment. Environment sizes are measured on Windows with the CUDA build of torch; with `--cpu-only` the song environment measured 1.0 GB and the scene environment 1.2 GB. macOS is not measured. Model sizes are the files' own.
 
-| Engine | Improves | Installer | Measured size |
-|:---|:---|:---|:---|
-| Beat | Beat tracking | `python scripts/install-beat-engine.py` (optional `--cpu-only`) | 4.3 GB, including torch environment |
-| Song | Song-map analysis | `python scripts/install-song-engine.py` (optional `--cpu-only`) | 0.16 GB |
-| Scene | Scene analysis | `python scripts/install-scene-engine.py` (optional `--cpu-only`) | 0.67 GB |
-| LaMa | Inpainting for Remove | `python scripts/install-lama-engine.py --reuse-venv VENV --model BIG_LAMA_PT` | Not measured |
-| Silero VAD | Speech detection for dialogue ducking | `python scripts/install-speech-engine.py` | 2.3 MB |
+| Engine | Adds | Installer | Models | Environment |
+|:---|:---|:---|---:|---:|
+| Beat | Better beat tracking | `python scripts/install-beat-engine.py` | 81 MB | 4.5 GB |
+| Song | Named song parts, drums, melody and words on the song map | `python scripts/install-song-engine.py` | 5.0 GB | 5.0 GB |
+| Scene | Measure sync on a take, cuts, speakers, camera move | `python scripts/install-scene-engine.py` | 0.6 GB | 5.1 GB |
+| LaMa | Remove in Image | `python scripts/install-lama-engine.py` | 0.2 GB | the scene engine's |
+| Silero VAD | Music lowered under dialogue | `python scripts/install-speech-engine.py` | 2.3 MB | none |
 
-Song and scene also require their candidate model files; see each installer's `--help`. LaMa downloads nothing and reuses an existing separate environment with torch, numpy and Pillow (for example the scene engine's), rather than creating one; provide the required TorchScript model. Do not use the Hermes environment for LaMa.
+Model files come from their publishers at one pinned revision each ([sources](scripts/engine_models.py)) and are accepted only with their pinned sha256. They go to `engines/models/` beside the engines. A file that is already there is checked and kept, an interrupted download resumes on the next run, and `--no-download` fetches nothing and lists what is missing. Beat, song and scene take `--cpu-only`.
+
+- **Scene:** Measure sync also uses ComfyUI's own face landmarker code, so it needs a ComfyUI install in the [ComfyUI folder](#requirements); cuts, speakers and camera move do not.
+- **LaMa:** install the scene engine first, it runs in that environment (or name another one with torch, numpy and Pillow: `--reuse-venv`). It reads `models/inpaint/big-lama.pt` in your ComfyUI folder when that file is there.
 
 Silero installs the model only; dialogue ducking also needs `onnxruntime` importable by the Continuo backend Python process. It does not use a separate engine venv.
 
@@ -342,14 +346,16 @@ Continuo calls only these hosts:
 | `imagecache.civitai.com` | LoRA preview images of that lookup |
 | `optim-images.krea.ai` | style-browser thumbnails of an uncached board |
 | `cloud.cp.jku.at` | Beat This! checkpoint download when the optional beat installer is run |
-| `huggingface.co` | Beat This! checkpoint, second source (a third party's repository pinned to one commit, accepted only with the same sha256) when the optional beat installer is run and cloud.cp.jku.at fails |
-| `download.pytorch.org` | PyTorch wheels when optional hash-locked engine installers are run |
-| `pypi.org` | Python packages when optional hash-locked engine installers are run |
-| `raw.githubusercontent.com` | pinned Silero VAD model when its optional installer is run |
+| `huggingface.co` | model files of an optional engine when you run its installer (song, scene, LaMa: each file at one pinned revision, accepted only with its pinned sha256), and the Beat This! checkpoint's second source when cloud.cp.jku.at fails. Downloads are redirected to Hugging Face's own file hosts (*.hf.co) |
+| `download.pytorch.org` | PyTorch wheels when optional hash-locked engine installers are run (the files come from download-r2.pytorch.org) |
+| `pypi.org` | Python packages when optional hash-locked engine installers are run (the files come from files.pythonhosted.org) |
+| `releases.astral.sh` | Python 3.10 (22 MB) for an engine's own environment, fetched by uv when an optional beat, song or scene installer is run and uv finds no Python 3.10.20 on the machine |
+| `raw.githubusercontent.com` | pinned Silero VAD model and the ADTOF drum model (3.6 MB) when their optional installers are run |
+| `github.com` | the LaMa model (206 MB, a release file, redirected to release-assets.githubusercontent.com) and pinned model code of the song and scene engines (git) when their optional installers are run |
 
 Never fetched:
 
-- Links in documentation and metadata only: `hermes-agent.nousresearch.com`, `github.com`, `fountain.io`, `www.w3.org`, `ns.adobe.com`, `docs.comfy.org`, `www.minimax.io`, `ffmpeg.org`.
+- Links in documentation and metadata only: `hermes-agent.nousresearch.com`, `fountain.io`, `www.w3.org`, `ns.adobe.com`, `docs.comfy.org`, `www.minimax.io`, `ffmpeg.org`.
 - Source citations in the bundled music reference list: `blogs.loc.gov`, `downloads.bbc.co.uk`, `imslp.org`, `mtosmt.org`, `songdata.io`, `www.musicnotes.com`.
 - Source citations in the bundled prompt skills (`skills/*/references/`): links to model cards, vendor documentation and community posts.
 
@@ -416,6 +422,22 @@ Issues are welcome at [github.com/realartsbro/continuo/issues](https://github.co
 
 Pull requests are welcome through a fork. This repository is a built tree: the maintainer carries an accepted change
 over into the source, and it comes back here with the next build.
+
+### Testing on macOS and Linux
+
+Continuo is built and tested on Windows. Runs on macOS and Linux are the most useful help right now, by hand or by your
+agent. Open issues labelled `help wanted` name what to run, and each states what it downloads.
+
+| Step | Downloads |
+|:---|:---|
+| Install, enable, export the Sample film | the plugin (23 MB) and its Python packages (511 MB), plus ffmpeg |
+| Open Continuo in Hermes Desktop | nothing more |
+| An optional engine | up to 5 GB of model files and 1 to 5 GB for its Python environment; each size is under [Optional analysis engines](#optional-analysis-engines) |
+| A model through ComfyUI | 5 to 46 GB per workflow; each size is under [Models](#models-optional) |
+
+Report with the **Platform report** issue form. If an agent runs the steps for you, give it this section and the issue:
+it runs the commands as written, changes no plugin file, and pastes commands, exit codes and the last lines of output.
+A step that fails is a useful report and needs no fix.
 
 ## License and credits
 

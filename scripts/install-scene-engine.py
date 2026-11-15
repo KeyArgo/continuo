@@ -1,6 +1,7 @@
 """Install the Film Suite scene-analysis engine (lane w6-scene) into its OWN uv venv.
 
-    python scripts/install-scene-engine.py [--engine-dir DIR] [--cpu-only] [--source-root DIR] [--smoke VIDEO]
+    python scripts/install-scene-engine.py [--engine-dir DIR] [--models-dir DIR] [--no-download] [--cpu-only]
+                                           [--source-root DIR] [--smoke VIDEO]
 
 Creates ``%LOCALAPPDATA%/hermes/film-suite/engines/scene-analysis/``:
     venv/          uv venv, the lock's python, hash-locked stack (scripts/engine-locks) (never the Hermes venv, never ComfyUI's python)
@@ -15,10 +16,18 @@ The model code is fetched by this installer at a pinned full commit (table SOURC
 URL, or from ``--source-root DIR`` (one local clone per repository name) for offline use.  A wrong sha
 or a commit the remote no longer has is refused.
 
-Weights are NEVER downloaded and never copied: they are read in place from
-``film-suite/engines/candidates`` (each sha256 checked against candidates.json) and from ComfyUI's
-MediaPipe face landmarker (models/detection, sha256 recorded). Idempotent: re-running re-installs from the lock (--require-hashes)
-and the copies. Remove the directory to uninstall; the Take tab then says "Not installed".
+It fills ``engines/models/`` (``--models-dir``) with the model files the runner reads: OmniShotCut, SyncNet and the
+Nemotron speaker model, 0.6 GB, each from its publisher at one pinned revision (``scripts/engine_models.py``).  The
+MediaPipe face landmarker (5.4 MB) is read in place from ComfyUI's ``models/detection`` when the pinned file is there,
+else fetched into the same folder.  A file that is already there is checked and kept; one with another sha256 is
+refused, never replaced; ``--no-download`` fetches nothing and lists what is missing.
+
+Cuts, speakers and motion need nothing else.  Measure sync also imports ComfyUI's own face landmarker code
+(``comfy_extras/mediapipe``), so it needs a ComfyUI install in the ComfyUI folder; without one the installer says so
+and that part answers with its error while the others work.
+
+Idempotent: re-running re-installs from the lock (--require-hashes), the copies, and resumes an interrupted download.
+Remove the directory to uninstall; the Take tab then says "Not installed".
 """
 from __future__ import annotations
 
@@ -39,6 +48,9 @@ _spec.loader.exec_module(pinned_source)
 _env_spec = importlib.util.spec_from_file_location("film_suite_engine_env", Path(__file__).resolve().parent / "engine_env.py")
 engine_env = importlib.util.module_from_spec(_env_spec)
 _env_spec.loader.exec_module(engine_env)
+_models_spec = importlib.util.spec_from_file_location("film_suite_engine_models", Path(__file__).resolve().parent / "engine_models.py")
+engine_models = importlib.util.module_from_spec(_models_spec)
+_models_spec.loader.exec_module(engine_models)
 CORE = (ROOT / "backend" / "film-suite" / "dashboard" if (ROOT / "backend" / "film-suite" / "dashboard").is_dir() else ROOT / "dashboard") / "scene_core"
 # Packages: ONLY the hash lock scripts/engine-locks/scene-analysis.txt (CUDA) or .cpu.txt (--cpu-only), compiled from
 # the live venv the measurements ran on (scripts/engine_env.py lock).  Change it only with a new measurement.
@@ -58,7 +70,7 @@ SOURCES = {
 }
 OMNISHOTCUT_COMMIT = SOURCES["OmniShotCut"]["commit"]
 SYNCNET_COMMIT = SOURCES["syncnet_python"]["commit"]
-# key in the request -> (candidates.json entry, file inside it)
+# key in the request -> (folder of the model table in scripts/engine_models.py, file inside it)
 CANDIDATE_WEIGHTS = {
     "syncnet": ("syncnet-v2", "auxiliary/syncnet_v2.model"),
     "omnishotcut": ("omnishotcut", "OmniShotCut_ckpt.pth"),
@@ -90,6 +102,20 @@ def default_engine_dir() -> Path:
     return hermes_dir() / "film-suite" / "engines" / "scene-analysis"
 
 
+def default_models_dir() -> Path:
+    """``engines/models``; an install from before this folder had a name keeps its ``engines/candidates``."""
+    engines = hermes_dir() / "film-suite" / "engines"
+    return engines / "candidates" if (engines / "candidates").is_dir() else engines / "models"
+
+
+def sync_note() -> str | None:
+    """None when Measure sync can run; else the fact (it imports ComfyUI's face landmarker code)."""
+    if (COMFY_ROOT / "comfy_extras" / "mediapipe" / "face_landmarker.py").is_file():
+        return None
+    return (f"Measure sync is not available: no ComfyUI with comfy_extras/mediapipe at {COMFY_ROOT} "
+            "(cuts, speakers and motion work without it; set the ComfyUI folder and re-run to add sync)")
+
+
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as handle:
@@ -113,24 +139,24 @@ def venv_python(venv: Path) -> Path:
     return venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
-def check_weights(cand_dir: Path) -> dict[str, dict[str, str]]:
-    table = json.loads((cand_dir / "candidates.json").read_text(encoding="utf-8"))
-    out = {}
-    for key, (entry, name) in CANDIDATE_WEIGHTS.items():
-        want = table[entry]["files"][name]["sha256"]
-        path = cand_dir / entry / name
-        if not path.is_file():
-            raise SystemExit(f"weights missing: {path} (never downloaded by this installer)")
-        got = sha256(path)
-        if got != want:
-            raise SystemExit(f"weights sha256 mismatch for {key}: {got} != candidates.json {want}")
-        out[key] = {"path": str(path), "sha256": got}
-        print(f"weights ok: {key} {got[:12]}")
-    out["nemotron"] = {"path": str(cand_dir / "nemotron-3-diarization"), "sha256": out["nemotron_model"]["sha256"]}
-    mp = COMFY_ROOT / MEDIAPIPE
-    if not mp.is_file():
-        raise SystemExit(f"MediaPipe face landmarker missing: {mp}")
-    out["mediapipe"] = {"path": str(mp), "sha256": sha256(mp)}
+def check_weights(models_dir: Path, *, download: bool = True, opener=None, models: dict | None = None) -> dict[str, dict[str, str]]:
+    """Every model file the runner reads, with its pinned sha256; a missing one is downloaded
+    (``engine_models.ensure``) unless ``download`` is off.  ``models`` replaces the pinned table (tests)."""
+    table = engine_models.MODELS if models is None else models
+    log = lambda line: print(line, flush=True)  # noqa: E731
+    models_dir = Path(models_dir)
+    found = engine_models.ensure(models_dir, engine_models.SETS["scene"], download=download, opener=opener, log=log, models=table)
+    out = {key: dict(found[folder][name]) for key, (folder, name) in CANDIDATE_WEIGHTS.items()}
+    out["nemotron"] = {"path": str(models_dir / "nemotron-3-diarization"), "sha256": out["nemotron_model"]["sha256"]}
+    # ComfyUI's own copy when it is the pinned file (read in place); any other file there is left alone.
+    name, (_size, want) = next(iter(table["mediapipe-face"]["files"].items()))
+    in_comfy = COMFY_ROOT / MEDIAPIPE
+    if in_comfy.is_file() and sha256(in_comfy) == want:
+        out["mediapipe"] = {"path": str(in_comfy), "sha256": want}
+        log(f"model ok: {in_comfy}")
+    else:
+        own = engine_models.ensure(models_dir, engine_models.SETS["face"], download=download, opener=opener, log=log, models=table)
+        out["mediapipe"] = dict(own["mediapipe-face"][name])
     return out
 
 
@@ -178,7 +204,10 @@ def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--engine-dir", type=Path, default=default_engine_dir())
     ap.add_argument("--cpu-only", action="store_true", help="CPU torch wheels (no CUDA); macOS has one lock (MPS or CPU at run time) and ignores it")
-    ap.add_argument("--candidates", type=Path, default=hermes_dir() / "film-suite" / "engines" / "candidates")
+    ap.add_argument("--models-dir", "--candidates", dest="models_dir", type=Path, default=default_models_dir(),
+                    help=f"where the model files live ({engine_models.gigabytes(engine_models.total_bytes('scene', 'face'))}; "
+                         "downloaded there when missing)")
+    ap.add_argument("--no-download", action="store_true", help="fetch no model file: list the missing ones and stop")
     ap.add_argument("--source-root", type=Path, default=None,
                     help="offline: folder of local clones (one per SOURCES name); default is each pinned URL")
     ap.add_argument("--smoke", help="analyse this video once after installing")
@@ -186,7 +215,7 @@ def main(argv: list[str]) -> int:
     uv = shutil.which("uv")
     if not uv:
         raise SystemExit("uv not found on PATH")
-    weights = check_weights(args.candidates)
+    weights = check_weights(args.models_dir, download=not args.no_download)
     edir: Path = args.engine_dir
     edir.mkdir(parents=True, exist_ok=True)
     venv = edir / "venv"
@@ -220,6 +249,8 @@ def main(argv: list[str]) -> int:
     record["env"] = env_receipt  # lock sha256, python, uv, exclude-newer, sha256 of the post-install freeze
     (edir / "engine.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
     print(json.dumps(record, indent=2))
+    if sync_note():
+        print(sync_note(), flush=True)
     if args.smoke:
         req = {"schema": "studio.scene-runner-request/1", "video_path": args.smoke, "device": "cpu", "parts": ["motion", "cuts"],
                "weights": record["weights"], "weights_sha256": record["weights_sha256"], "comfy_root": record["comfy_root"]}

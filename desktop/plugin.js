@@ -126088,12 +126088,13 @@ import { jsx as jsx166, jsxs as jsxs145 } from "react/jsx-runtime";
 import { useValue as useValue39 } from "@hermes/plugin-sdk";
 import { jsx as jsx164, jsxs as jsxs143 } from "react/jsx-runtime";
 var REASON = { music: "song: confidence is not usable, only the offset", foreign: "the sound does not match the mouth", drift_not_measurable: "too little speech to measure drift" };
+var UNAVAILABLE2 = { no_face: "No face", no_sound: "No sound", no_comfyui: "No ComfyUI" };
 function syncSummary(map) {
   if (!map) return { state: "none", text: "Not measured", tip: "Measure sync with the scene engine" };
   if (map.engine && map.engine.state === "not_installed") return { state: "not_installed", text: "Not installed", tip: "The scene engine is not installed on this machine" };
   const s = map.sync;
   if (!s) return { state: "none", text: "Not measured", tip: "Measure sync with the scene engine" };
-  if (!s.available) return { state: "unavailable", text: s.reason === "no_face" ? "No face" : "No sound", tip: "Sync needs a face and sound" };
+  if (!s.available) return { state: "unavailable", text: UNAVAILABLE2[s.reason] || "No sound", tip: s.reason === "no_comfyui" ? "Sync needs the ComfyUI folder" : "Sync needs a face and sound" };
   const extra = [];
   if (s.foreign) extra.push("Foreign sound");
   else if (s.offset_only) extra.push("Offset only");
