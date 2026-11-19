@@ -45,7 +45,9 @@ only at exactly CFG 1 `[local]`.
 - The text encoder itself puts `<image1>`, `<image2>` … in front of each picture, in upload order, before your
   words `[local]`. Write the tags exactly so: `<image1>`, no space, lower case.
 - Edit output size = image 1 scaled to about `reference_resolution`² (default 1024 → about 1 MP), same aspect
-  ratio. Create size = `aspect_ratio` × `megapixels` (default 1:1, 1.0 MP). Never write a ratio, resolution, "4K"
+  ratio. Create size = `aspect_ratio` × `megapixels` (default 1:1, 1.0 MP). `aspect_ratio` takes the option label
+  (`"3:4 (Portrait Standard)"`, `"16:9 (Widescreen)"`); the short form `"3:4"` names the same option `[code]`. A
+  refused value answers `accepted` with every option. Never write a ratio, resolution, "4K"
   or "8K" into the prompt `[code]` `[official]`.
 - Batch: picture i uses seed + i `[code]`.
 - Weights like `(word:1.3)` are not parsed; the tokenizer reads them as text `[local]`.

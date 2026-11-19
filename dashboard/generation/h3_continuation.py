@@ -26,6 +26,11 @@ import os
 import urllib.request
 import uuid
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_h3_continuation_win_io", Path(__file__).resolve().parents[1] / "studio_core" / "win_io.py")
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any, Callable, Mapping
 
 EXTEND_TARGET_ID = "minimax-h3-extend-mctx-v1"
@@ -439,7 +444,7 @@ def stage_pairs(facts_and_paths: list[tuple[Mapping[str, Any], str]], names: lis
         video = Path(path).read_bytes()
         if hashlib.sha256(video).hexdigest() != facts["self_id"]:
             raise H3ContinuationError("the take changed after it was checked", "pair_broken")
-        sidecar = mctx.sidecar_path(path).read_bytes()
+        sidecar = _win_io.read_bytes(mctx.sidecar_path(path))
         if mctx.take_facts(mctx.parse_header(sidecar))["self_id"] != facts["self_id"]:
             raise H3ContinuationError("the take changed after it was checked", "pair_broken")
         staged.append(upload(video, name + ".mp4"))

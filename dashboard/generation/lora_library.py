@@ -35,6 +35,11 @@ import urllib.error
 import urllib.request
 from html.parser import HTMLParser
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_lora_library_win_io", Path(__file__).resolve().parents[1] / "studio_core" / "win_io.py")
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any, Callable
 
 LORA_EXT = ".safetensors"
@@ -110,8 +115,7 @@ def _read_bounded(path: Path, limit: int) -> bytes | None:
     try:
         if path.is_symlink() or not path.is_file() or path.stat().st_size > limit:
             return None
-        with open(path, "rb") as handle:
-            data = handle.read(limit + 1)
+        data = _win_io.read_bytes(path, limit + 1)
     except OSError:
         return None
     return data if len(data) <= limit else None
@@ -244,27 +248,34 @@ def _top_tags(meta: dict[str, str], count: int = 8) -> list[str]:
 
 
 # Family label per pattern, first match wins (labels as in the model catalog).
+# w45-s13: a maker's newer model is never folded into its older family. A version number other than the family's
+# own keeps the raw name (no catalog family has it, so the admission check refuses it instead of loading it on the
+# wrong model); the newer generation is matched before the older one (FLUX.3 Klein before FLUX.2 Klein). A bare
+# "klein" keeps FLUX.2 Klein: the only Klein before FLUX.3, and FLUX.3 trainers and BFL write "flux3"/"FLUX.3 [klein]".
+# A bare "minimax" keeps MiniMax H3 (MiniMax's only open model with LoRAs), but not a named Hailuo/video/speech model.
 _BASE_FAMILIES = (
-    (re.compile(r"minimax|mm-?h3|(?:^|[^a-z0-9])h3(?:[^a-z0-9]|$)|ref2va|fl2va", re.I), "MiniMax H3"),
-    (re.compile(r"krea", re.I), "Krea 2"),
-    (re.compile(r"anima", re.I), "Anima"),
-    (re.compile(r"qwen.{0,12}(?<![0-9])2(?:\.\d)?(?![0-9])", re.I), "Qwen-Image 2.1"),
-    (re.compile(r"qwen", re.I), "Qwen-Image"),
-    (re.compile(r"flux.{0,4}2.{0,4}klein|klein", re.I), "FLUX.2 Klein"),
-    (re.compile(r"flux.{0,4}2", re.I), "FLUX.2"),
-    (re.compile(r"flux", re.I), "FLUX.1"),
-    (re.compile(r"ideogram", re.I), "Ideogram 4"),
-    (re.compile(r"wan.{0,3}2\.?2", re.I), "Wan 2.2"),
-    (re.compile(r"wan", re.I), "Wan"),
-    (re.compile(r"ltx", re.I), "LTX Video"),
-    (re.compile(r"hunyuan", re.I), "Hunyuan Video"),
+    (re.compile(r"minimax(?![ _.-]*(?:hailuo|video|speech|abab|m\d))|mm-?h3|(?:^|[^a-z0-9])h3(?:[^a-z0-9]|$)|ref2va|fl2va",
+                re.I), "MiniMax H3"),
+    (re.compile(r"flux[^a-z0-9]{0,3}3(?!\d).{0,12}klein", re.I), "FLUX.3 Klein"),
+    (re.compile(r"flux[^a-z0-9]{0,3}2(?!\d).{0,12}klein|^(?!.*flux[^a-z0-9]{0,3}(?!2(?!\d))\d).*klein", re.I), "FLUX.2 Klein"),
+    (re.compile(r"flux[^a-z0-9]{0,3}2(?!\d)", re.I), "FLUX.2"),
+    (re.compile(r"flux[^a-z0-9]{0,3}1(?!\d)|flux(?![^a-z0-9]{0,3}\d)", re.I), "FLUX.1"),
+    (re.compile(r"krea(?![^a-z0-9]{0,3}(?!2(?!\d))\d)", re.I), "Krea 2"),
+    (re.compile(r"anima(?!gine|te|ted|tion|l)", re.I), "Anima"),
+    (re.compile(r"qwen.{0,12}(?<![0-9])2(?:[._]1)?(?![0-9]|\.\d)", re.I), "Qwen-Image 2.1"),
+    (re.compile(r"qwen(?![^0-9]{0,12}(?<![0-9])(?:[3-9]|2[._]?[02-9])(?![0-9]))", re.I), "Qwen-Image"),
+    (re.compile(r"ideogram(?![^a-z0-9]{0,3}(?!4(?!\d))\d)", re.I), "Ideogram 4"),
+    (re.compile(r"(?<![a-z])wan(?![a-z]).{0,8}2[._]?2(?!\d)", re.I), "Wan 2.2"),
+    (re.compile(r"(?<![a-z])wan(?![a-z])(?!.{0,8}(?:2[._]?[3-9]|[3-9][._]\d))", re.I), "Wan"),
+    (re.compile(r"ltx(?!v?[^a-z0-9]{0,3}[2-9])", re.I), "LTX Video"),
+    (re.compile(r"hunyuan[^a-z0-9]{0,3}video(?![^a-z0-9]{0,3}[1-9])", re.I), "Hunyuan Video"),
     (re.compile(r"illustrious", re.I), "Illustrious"),
     (re.compile(r"pony", re.I), "Pony"),
     (re.compile(r"sdxl|stable-diffusion-xl|sd_xl", re.I), "SDXL"),
     (re.compile(r"sd ?1\.5|stable-diffusion-v1|sd15", re.I), "SD 1.5"),
 )
 # Words in a file or folder name strong enough to name the family alone.
-_NAME_FAMILIES = re.compile(r"minimax_h3|mm-h3|krea2|anima|qwen[-_]image", re.I)
+_NAME_FAMILIES = re.compile(r"minimax_h3|mm-h3|krea2|anima(?!gine|te|ted|tion|l)|qwen[-_]image|flux[-_.]?[23][-_.]?klein", re.I)
 
 
 def base_family(value: Any) -> str:
@@ -481,7 +492,7 @@ class LoraLibrary:
                 handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temp, root / name)
+            _win_io.replace(temp, root / name)
         except OSError:
             try:
                 temp.unlink()

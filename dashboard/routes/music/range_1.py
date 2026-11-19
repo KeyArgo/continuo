@@ -30,8 +30,7 @@ def _music_ranges_path(project_ref: MusicProjectReference) -> Path:
 
 def _music_ranges_load(path: Path) -> dict[str, Any]:
     try:
-        with path.open("r", encoding="utf-8") as handle:
-            value = json.load(handle)
+        value = json.loads(_win_io.read_text(path, encoding="utf-8"))
     except FileNotFoundError:
         return {}
     if not isinstance(value, dict) or value.get("schema") != _MUSIC_RANGES_SCHEMA or not isinstance(value.get("ranges"), dict):
@@ -62,7 +61,7 @@ def _music_range_write_sync(request: MusicRangeWriteRequest) -> dict[str, Any]:
         temp = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex}")
         try:
             temp.write_text(json.dumps({"schema": _MUSIC_RANGES_SCHEMA, "ranges": ranges}, ensure_ascii=False), encoding="utf-8")
-            os.replace(temp, path)
+            _win_io.replace(temp, path)
         finally:
             temp.unlink(missing_ok=True)
     stored = ranges.get(request.track_sha256)

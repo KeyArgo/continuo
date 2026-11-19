@@ -33,7 +33,7 @@ def _jobs_dismissed_path(owner_scope: str) -> Path:
 def _jobs_dismissed_list(owner_scope: str) -> list[str]:
     path = _jobs_dismissed_path(owner_scope)
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = json.loads(_win_io.read_text(path, encoding="utf-8"))
     except (OSError, ValueError):
         return []
     ids = document.get("job_ids") if isinstance(document, dict) else None
@@ -61,7 +61,7 @@ def _jobs_dismissed_add(owner_scope: str, job_ids: list[str]) -> list[str]:
                 json.dump({"schema": _JOBS_DISMISSED_SCHEMA, "owner_scope": owner_scope, "job_ids": kept}, handle)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temp, path)
+            _win_io.replace(temp, path)
         except BaseException:
             try:
                 os.unlink(temp)

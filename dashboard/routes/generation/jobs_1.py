@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 
 _JOB_LABEL_MAX = 120
 _IMAGE_JOB_STATE_VIEW = {
@@ -308,14 +310,82 @@ def _export_jobs_for_scope(project_id: str | None, limit: int) -> list[dict[str,
 # is polled by the Film Suite page, so it also collects the scope's OWN ready
 # jobs: a few per call, each at most once per retry window, never a submit,
 # never a running job, never another scope's job.
-_READY_COLLECT_PER_CALL = 2
+#
+# Lane w45-s24: Jobs and status share four process-wide fetch/publication slots. A started publication runs on a
+# daemon thread even if the request closes. A stop after record_ingested can be replayed locally; before that record
+# recovery may require the provider output again. Stuck publication is reported by the Jobs API as a timeout.
+_READY_COLLECT_PER_CALL = 2  # runs per list call (the members of one Generate x N run count as one run)
+_READY_COLLECT_JOBS_PER_CALL = 4  # pictures published inside one list call (oldest first)
 _READY_COLLECT_RETRY_SECONDS = 60.0
 _READY_COLLECT_TIMEOUT_SECONDS = 20.0
 _READY_COLLECT_LAST_TRY: dict[str, float] = {}
+_READY_COLLECT_LAST_TRY_LOCK = globals().get("_READY_COLLECT_LAST_TRY_LOCK") or threading.Lock()
+_READY_COLLECT_FAILED_MAX = 500
+_READY_COLLECT_FAILED: collections.OrderedDict[str, dict[str, Any]] = (
+    globals().get("_READY_COLLECT_FAILED") or collections.OrderedDict())
+_READY_COLLECT_FAILED_LOCK = globals().get("_READY_COLLECT_FAILED_LOCK") or threading.Lock()
+
+
+def _ready_collect_record(job_id: str, error: BaseException | None) -> None:
+    """The one bounded failure record (oldest dropped past _READY_COLLECT_FAILED_MAX); success clears the job's entry."""
+    with _READY_COLLECT_FAILED_LOCK:
+        if error is None:
+            _READY_COLLECT_FAILED.pop(job_id, None)
+            return
+        if isinstance(error, (TimeoutError, asyncio.TimeoutError)):
+            name, code = "TimeoutError", str(getattr(error, "code", "") or "")[:80] or None
+        else:
+            name, code = type(error).__name__, str(getattr(error, "code", "") or "")[:80] or None
+        _READY_COLLECT_FAILED[job_id] = {"error": name, "code": code, "at": time.time()}
+        _READY_COLLECT_FAILED.move_to_end(job_id)
+        while len(_READY_COLLECT_FAILED) > _READY_COLLECT_FAILED_MAX:
+            _READY_COLLECT_FAILED.popitem(last=False)
+
+
+def _ready_collect_failed_snapshot() -> dict[str, dict[str, Any]]:
+    with _READY_COLLECT_FAILED_LOCK:
+        return {job_id: dict(entry) for job_id, entry in _READY_COLLECT_FAILED.items()}
+
+
+class _ReadyCollectDeadline(TimeoutError):
+    code = "collect-deadline"
 
 
 def _ready_collect_clock() -> float:
     return time.monotonic()
+
+
+def _oldest_owned_collect_rows(owner_scope: str, jobs: Any, states: Any,
+                               exclude: set[str] | None = None) -> list[dict[str, Any]]:
+    """Select bounded pending work independently of the profile-wide display window."""
+    connection = jobs._connect()
+    try:
+        connection.execute("ATTACH DATABASE ? AS owners", (str(states._index.path),))
+        connection.execute("CREATE TEMP TABLE excluded_jobs (id TEXT PRIMARY KEY)")
+        connection.executemany("INSERT OR IGNORE INTO excluded_jobs VALUES (?)", ((job_id,) for job_id in (exclude or ())))
+        rows = connection.execute(
+            "SELECT j.* FROM image_producer_jobs j "
+            "LEFT JOIN owners.image_context_owners o ON o.context_id = "
+            "json_extract(j.request_snapshot_json, '$.context_basis.context_id') "
+            "WHERE j.state IN ('ready', 'ingested') AND COALESCE(o.owner_scope, 'film_owner:scratch') = ? "
+            "AND NOT EXISTS (SELECT 1 FROM excluded_jobs x WHERE x.id = j.image_producer_job_id) "
+            "ORDER BY j.rowid ASC LIMIT 200", (owner_scope,),
+        ).fetchall()
+        result = []
+        owned_contexts = set()
+        for row in rows:
+            try:
+                job = jobs._row_job(connection, row)
+                context_id = ((job.get('request_snapshot') or {}).get('context_basis') or {}).get('context_id')
+                if context_id not in owned_contexts:
+                    states.require_owned(context_id)
+                    owned_contexts.add(context_id)
+                result.append(job)
+            except Exception:  # noqa: BLE001 - invalid or unowned rows never authorise collection
+                continue
+        return result
+    finally:
+        connection.close()
 
 
 async def _collect_owned_ready_image_jobs(owner_scope: str, rows: list[dict[str, Any]] | None = None,
@@ -323,46 +393,92 @@ async def _collect_owned_ready_image_jobs(owner_scope: str, rows: list[dict[str,
     handoff, jobs, states = services or _image_scope_services(owner_scope)
     now = _ready_collect_clock()
     due: list[str] = []
-    for job in (rows if rows is not None else jobs.list_recent(limit=200))[:200]:
-        if job.get("state") != "ready":
-            continue
-        basis = (job.get("request_snapshot") or {}).get("context_basis") or {}
-        try:
-            states.require_owned(basis.get("context_id"))
-        except Exception:  # noqa: BLE001 - not this scope's job: never touched
-            continue
-        job_id = job["image_producer_job_id"]
-        last = _READY_COLLECT_LAST_TRY.get(job_id)
-        if last is not None and now - last < _READY_COLLECT_RETRY_SECONDS:
-            continue
-        due.append(job_id)
-        if len(due) >= _READY_COLLECT_PER_CALL:
-            break
-    if not due:
-        return []
+    runs: set[str] = set()
+    with _READY_COLLECT_LAST_TRY_LOCK:
+        cutoff = now - _READY_COLLECT_RETRY_SECONDS
+        for key in [key for key, at in _READY_COLLECT_LAST_TRY.items() if at <= cutoff]:
+            _READY_COLLECT_LAST_TRY.pop(key, None)
+        retry_snapshot = tuple(_READY_COLLECT_LAST_TRY.items())
+    excluded = set(job_id for job_id, last in retry_snapshot
+                   if now - last < _READY_COLLECT_RETRY_SECONDS)
+    # Read oldest pending jobs for this owner, independently of the displayed recent rows.
+    candidates = _oldest_owned_collect_rows(owner_scope, jobs, states, excluded)
+    if not candidates:
+        return []  # nothing to bring home: the list never reaches the provider coordinator (as before s26)
+    # Owner w45: the services only now. s26 had moved this ahead of the selection, so every Jobs list reached the
+    # coordinator, and two concurrent looks were serialised on the root lock before either had selected (the second
+    # then saw the first's retry stamp and skipped the job instead of waiting for it). At most 4 jobs publish
+    # process-wide, so they need no SQL exclusion; they are skipped below before any quota counts them.
     async with _IMAGE_FILM_ROOT_LOCK_ASYNC:
         coordinator = handoff.producer_coordinator()
         collector, _reader = handoff.result_services()
-    for job_id in due:
-        _READY_COLLECT_LAST_TRY[job_id] = now
-
-        async def bring_home(job_id: str = job_id) -> None:
-            # A ready job answers from the coordinator's descriptor cache; after
-            # a restart it polls the provider once for that one owned prompt.
-            # A prompt ComfyUI forgot becomes quarantined "job_lost" there.
-            job = await coordinator.status(job_id)
-            if not isinstance(job, dict) or job.get("state") != "ready":
-                return
-            await collector.collect(job_id, job.get("output_descriptor"))
-
-        try:
-            await asyncio.wait_for(bring_home(), timeout=_READY_COLLECT_TIMEOUT_SECONDS)
-        except Exception:  # noqa: BLE001 - the ledger holds the outcome; retried later
+    publishing = getattr(collector, "publishing", None)
+    for job in candidates:
+        # w45-s14 item 2: "ingested" too - a stop between record_ingested and record_published is finished here.
+        if job.get("state") not in {"ready", "ingested"}:
             continue
-    if len(_READY_COLLECT_LAST_TRY) > 2_000:
-        cutoff = now - _READY_COLLECT_RETRY_SECONDS
-        for key in [key for key, at in _READY_COLLECT_LAST_TRY.items() if at < cutoff]:
-            _READY_COLLECT_LAST_TRY.pop(key, None)
+        job_id = job["image_producer_job_id"]
+        if callable(publishing) and publishing(job_id):
+            continue
+        # Owner w45: no second look at the live retry stamps here. Jobs waiting to retry were excluded from the
+        # snapshot taken at the start of this call; a stamp written meanwhile by a concurrent look means that look is
+        # bringing the job home right now, and this call waits for it on the job's lock instead of skipping it.
+        key = str(job.get("idempotency_key") or "")
+        match = _RUN_MEMBER_RE.match(key)
+        run = match.group(1) if match else (key or job_id)
+        if run not in runs and len(runs) >= _READY_COLLECT_PER_CALL:
+            continue
+        runs.add(run)
+        due.append(job_id)
+        if len(due) >= _READY_COLLECT_JOBS_PER_CALL:
+            break
+    if not due:
+        return []
+    # Recheck after selection in case a concurrent request started publication.
+    if callable(publishing):
+        due = [job_id for job_id in due if not publishing(job_id)]
+    if not due:
+        return []
+
+    async def bring_home(job_id: str) -> None:
+        # In this request. A ready job answers from the coordinator's descriptor cache; after a restart it polls the
+        # provider once for that one owned prompt. A prompt ComfyUI forgot becomes quarantined "job_lost". An ingested
+        # job is finished by the collector from the ledger, no descriptor needed.
+        try:
+            job = await coordinator.status(job_id)
+            if isinstance(job, dict) and job.get("state") in {"ready", "ingested"}:
+                await collector.collect(job_id, job.get("output_descriptor"))
+        except asyncio.CancelledError:
+            # Cut by the call's timeout while fetching: holds nothing, shown as a timeout, due again on the next call.
+            _ready_collect_record(job_id, _ReadyCollectDeadline())
+            with _READY_COLLECT_LAST_TRY_LOCK:
+                _READY_COLLECT_LAST_TRY.pop(job_id, None)
+            raise
+        except Exception as exc:  # noqa: BLE001 - recorded and shown on the job's row
+            _ready_collect_record(job_id, exc)
+        else:
+            _ready_collect_record(job_id, None)
+
+    with _READY_COLLECT_LAST_TRY_LOCK:
+        for job_id in due:
+            _READY_COLLECT_LAST_TRY[job_id] = now
+    # Awaited here, every one of them: the call's timeout cancels a bring-home still fetching (it holds nothing); one
+    # already publishing is waited for to its end (w45-s21: it runs on its own thread, which holds the job until done).
+    # If the request itself is cancelled, its bring-homes are cancelled with it and awaited; a publication under way
+    # still finishes on its thread and releases the job.
+    publishing = getattr(collector, "publishing", None)
+    tasks = {job_id: asyncio.ensure_future(bring_home(job_id)) for job_id in due}
+    try:
+        await asyncio.wait(tasks.values(), timeout=_READY_COLLECT_TIMEOUT_SECONDS)
+        for job_id, task in tasks.items():
+            if not task.done() and not (callable(publishing) and publishing(job_id)):
+                task.cancel()
+        await asyncio.gather(*tasks.values(), return_exceptions=True)
+    finally:
+        for task in tasks.values():
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks.values(), return_exceptions=True)
     return due
 
 
@@ -452,10 +568,23 @@ async def jobs_list(request: JobsListRequest) -> dict[str, Any]:
         touched += await _reconcile_owned_unfinished_image_jobs(request.owner_scope, rows, services) or []
     except Exception:  # noqa: BLE001 - listing never depends on reconciliation
         pass
+    # w45-s10 item 5: a job the reconcile above just moved to ready is brought home in this same call (collection read
+    # the window from before the reconcile, so such a job waited for the next list call).
+    collect_rows = rows
+    if rows is not None and touched:
+        collect_rows = []
+        for job in rows:
+            if job.get("image_producer_job_id") in touched:
+                try:
+                    job = services[1].get_job(job["image_producer_job_id"])
+                except Exception:  # noqa: BLE001 - keep the row as read
+                    pass
+            collect_rows.append(job)
+    collect: dict[str, Any] = {}
     try:
-        touched += await _collect_owned_ready_image_jobs(request.owner_scope, rows, services) or []
-    except Exception:  # noqa: BLE001 - listing never depends on collection
-        pass
+        touched += await _collect_owned_ready_image_jobs(request.owner_scope, collect_rows, services) or []
+    except Exception as exc:  # noqa: BLE001 - listing never depends on collection; the failure is answered
+        collect["error"] = type(exc).__name__
     if rows is not None and touched:
         wanted = set(touched)
         fresh: list[dict[str, Any]] = []
@@ -495,4 +624,66 @@ async def jobs_list(request: JobsListRequest) -> dict[str, Any]:
     counts = _jobs_mark_dismissed(request.owner_scope, jobs)
     if not request.include_dismissed:
         jobs = [job for job in jobs if not job["dismissed"]]
-    return {"schema": _JOBS_LIST_SCHEMA, "owner_scope": request.owner_scope, "jobs": jobs, "sources": sources, "counts": counts}
+    # From the scope's ledger window, not the listed rows (a batch run is listed as one row, its members are not), each
+    # state read now: the window was read before this call's reconcile and collection.
+    failed = []
+    recorded = _ready_collect_failed_snapshot()
+    # Also cover status-triggered and disconnected publications; the worker owns this clock until it really ends.
+    try:
+        collector, _reader = services[0].result_services()
+        for row in rows or ():
+            job_id = row.get('image_producer_job_id')
+            if collector.overdue(job_id, _READY_COLLECT_TIMEOUT_SECONDS):
+                # w47-q4 item 2: its own code; collect-deadline is a fetch the list call cut (_ReadyCollectDeadline).
+                recorded[job_id] = {'error': 'TimeoutError', 'code': 'publication-overdue', 'at': time.time()}
+    except Exception:  # noqa: BLE001 - the rest of the Jobs list remains available
+        pass
+    heads: dict[str, str] = {}  # run base -> the listed job id (member 0 of a batch run)
+    shown: set[str] = set()
+    member_head: dict[str, str] = {}
+    for row in rows or ():
+        key = str(row.get("idempotency_key") or "")
+        if not _RUN_MEMBER_RE.match(key):
+            heads[key or str(row.get("image_producer_job_id"))] = str(row.get("image_producer_job_id"))
+    for row in rows or ():
+        job_id = row.get("image_producer_job_id")
+        if job_id not in recorded:
+            continue
+        try:
+            current = services[1].get_job(job_id)
+            services[2].require_owned(((current.get("request_snapshot") or {}).get("context_basis") or {}).get("context_id"))
+            state = current.get("state")
+        except Exception:  # noqa: BLE001 - unreadable or another scope's job: not reported
+            continue
+        # w45-s17 item 2: an ingested picture (fetched, not yet published) is reported like a ready one.
+        if state in {"ready", "ingested"}:
+            failed.append({"job_id": job_id, **recorded[job_id]})
+            key = str(current.get("idempotency_key") or "")
+            match = _RUN_MEMBER_RE.match(key)
+            base = match.group(1) if match else (key or job_id)
+            member_head[job_id] = heads.get(base, job_id)
+            shown.update({member_head[job_id], job_id})
+    for job in jobs:
+        if job.get("module") != "image" or job.get("job_id") not in shown:
+            continue
+        # Its own record, else (a batch run listed as one row) its first member's that has one.
+        own = next((entry for entry in failed if entry["job_id"] == job["job_id"]), None) or next(
+            (entry for entry in failed if member_head.get(entry["job_id"]) == job["job_id"]), None)
+        if own is not None:
+            job["collect_error"] = own["error"]
+            # w47-q4 item 2: which wait it is (collect-deadline: the fetch was cut, nothing is saving, fetched again on
+            # the next look; publication-overdue: still saving into Media on its own thread); null for other failures.
+            job["collect_code"] = own.get("code")
+    if failed:
+        collect["failed"] = failed
+    # w47-q1 item 3 (L3): a list cut by its limit still says how many local takes wait in this scope (0 = none).
+    try:
+        waiting_total = int(globals()["_vq_waiting_total"](request.project_id))
+    except Exception:  # noqa: BLE001 - an unreadable line: the listed rows still answer
+        waiting_total = None
+    if waiting_total is not None:
+        for job in jobs:
+            if job.get("module") == "shoot" and job.get("raw_state") == "waiting":
+                job["waiting_total"] = waiting_total  # a waiting row reads "<position> of <total>"
+    return {"schema": _JOBS_LIST_SCHEMA, "owner_scope": request.owner_scope, "jobs": jobs, "sources": sources, "counts": counts,
+            "waiting_total": waiting_total, **({"collect": collect} if collect else {})}

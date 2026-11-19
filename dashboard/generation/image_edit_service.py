@@ -42,6 +42,11 @@ import urllib.request
 import uuid
 from collections import OrderedDict
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_image_edit_service_win_io", Path(__file__).resolve().parents[1] / "studio_core" / "win_io.py")
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any, Mapping
 
 MAX_SOURCE_PIXELS = 67_108_864
@@ -1135,7 +1140,7 @@ class EditStore:
         try:
             with os.fdopen(fd, "wb") as handle:
                 handle.write(data)
-            os.replace(temp, path)
+            _win_io.replace(temp, path)
         finally:
             if os.path.exists(temp):
                 os.unlink(temp)
@@ -1162,7 +1167,7 @@ class EditStore:
             return None
         path = folder / "masks" / f"{digest}.png"
         try:
-            data = path.read_bytes()
+            data = _win_io.read_bytes(path)
         except OSError:
             return None
         return data if hashlib.sha256(data).hexdigest() == digest else None
@@ -1196,7 +1201,7 @@ class EditStore:
         if path is None:
             return None
         try:
-            kept = json.loads(path.read_bytes().decode("utf-8"))
+            kept = json.loads(_win_io.read_bytes(path).decode("utf-8"))
         except (OSError, ValueError):
             return None
         return kept["body"] if isinstance(kept, dict) and kept.get("key") == key and isinstance(kept.get("body"), dict) else None
@@ -1211,7 +1216,7 @@ class EditStore:
         if folder is None:
             return None
         try:
-            record = json.loads((folder / f"{edit_id}.json").read_bytes().decode("utf-8"))
+            record = json.loads(_win_io.read_bytes(folder / f"{edit_id}.json").decode("utf-8"))
         except (OSError, ValueError):
             return None
         if not isinstance(record, dict) or record.get("edit_id") != edit_id:

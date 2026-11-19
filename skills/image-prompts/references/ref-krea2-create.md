@@ -45,6 +45,10 @@ Evidence tags: `[code]` Continuo source, `[local]` the installed engine, `[offic
   sampler, scheduler, `negative` (Raw only). `set_size`: aspect presets 1:1, 4:5, 3:4, 2:3, 9:16, 16:9,
   3:2, 21:9 at a chosen MP; the renderer allows 512–2048 px per side in steps of 16 and at most 4.19 MP
   (2048×2048). Batch 1–8, picture *i* uses `seed + i` `[code]`.
+- **Without the Image pane** (`continuo_image_submit`): `continuo_models_catalog` answers a whole valid spec in the
+  Krea 2 rows (`families[krea2].variants[turbo|raw].submit.render_spec`, `studio.krea2-render-spec/2`, seed 0,
+  1024×1024). Change seed, size, steps or `batch_size` in it and send the request's `seed`, `width`, `height` equal
+  to the spec's. Krea 2 is not a workflow target: `continuo_image_workflow_submit` / `_health` refuse it `[code]`.
 - **Presets** `[code]`: Turbo = 8 steps, CFG 1.0, euler/simple, denoise 1. "Official Turbo" = CFG 1.0 (Krea's
   CFG 0 in ComfyUI terms; ComfyUI's Krea 2 model already samples at Krea's fixed shift of 1.15 `[local]`, so there
   is no mu control). Raw (the default Raw preset) = 52 steps, ComfyUI CFG 3.5 (= Krea 2.5). "Raw, official" = 52

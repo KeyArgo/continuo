@@ -145,11 +145,15 @@ async def video_take_upscale(request: VideoUpscaleRequest) -> dict[str, Any]:
     project_id = request.project_id if request.project_id is not None else (project_ref.project_id if project_ref is not None else None)
     if project_ref is None and project_id is not None:
         project_ref = ProjectReference(project_id=project_id)
+    try:  # w45-s4 item 2: a folder nobody approved is the named refusal /submit gives, never HTTP 500
+        roots = _request_roots(request.approved_roots, project_ref)
+    except _FolderNotApproved as exc:
+        return _folder_refusal(exc)
     submit_request = SubmitRequest(
         schema="studio.generation-request/1", provider_id="comfyui-local", target_id=_vsr_module.TARGET_ID,
         client_request_id=request.client_request_id, args={"take": request.studio_job_id, **settings},
         save_to=request.save_to, requested_basename=request.requested_basename,
-        approved_roots=_request_roots(request.approved_roots, project_ref),
+        approved_roots=roots,
         **({"project_id": project_id, "project_ref": project_ref} if project_id is not None else {}),
     )
     answer = await submit(submit_request)

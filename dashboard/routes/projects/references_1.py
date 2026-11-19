@@ -62,7 +62,7 @@ def _references_file(directory: str) -> Path:
 def _references_document(directory: str) -> dict[str, Any]:
     target = _references_file(directory)
     try:
-        document = json.loads(target.read_text(encoding="utf-8"))
+        document = json.loads(_win_io.read_text(target, encoding="utf-8"))
     except FileNotFoundError:
         return {"schema": _REFERENCES_SCHEMA, "revision": 0, "references": []}
     except (OSError, ValueError):
@@ -108,7 +108,7 @@ def _reference_use(request: ReferenceUseRequest) -> dict[str, Any]:
             temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
             try:
                 temporary.write_text(json.dumps(document, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-                os.replace(temporary, target)
+                _win_io.replace(temporary, target)
             finally:
                 temporary.unlink(missing_ok=True)
         public = _references_public(document)

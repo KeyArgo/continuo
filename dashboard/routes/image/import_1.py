@@ -43,17 +43,21 @@ async def image_producer_import(request: ImageImportRequest) -> Any:
                     # folder the project does not know) is copied in by itself; its folder is not approved. Page only,
                     # and never a file inside a folder taken back in Hermes Settings > Plugins (MED-102).
                     if _film_caller() == "hermes" or _approved_roots_module.in_revoked(request.path, _folder_grants().revoked()):
-                        return JSONResponse(status_code=403, content=_folder_refusal())
+                        return JSONResponse(status_code=403, content=_folder_refusal(
+                            folder=_refused_folder(request.path), project_ref=request.project_ref))
                     if not os.path.isabs(request.path) or request.path.startswith(("\\\\", "//")):
                         return refuse("path_refused", imported.OUTSIDE_ROOTS)
                     roots = [os.path.dirname(os.path.abspath(request.path))]
-                elif not request.approved_roots:
-                    return refuse("path_refused", imported.OUTSIDE_ROOTS)
                 else:
+                    # Lane w45-s1 item 5 (MED-107): the server decides the folders. Without a sent list the server's own
+                    # list counts (project_ref: the project's approved folders plus its media/ and output/; without one
+                    # the Loose-work folders), as on the media routes; a path outside them is refused by name. A sent
+                    # list still only narrows (a folder the artist never approved refuses Hermes' whole request).
                     try:
-                        roots = _request_roots(request.approved_roots, request.project_ref, path=request.path)
-                    except _FolderNotApproved:
-                        return JSONResponse(status_code=403, content=_folder_refusal())
+                        roots = _request_roots(request.approved_roots, request.project_ref, path=request.path,
+                                               server_list=not request.approved_roots)
+                    except _FolderNotApproved as exc:
+                        return JSONResponse(status_code=403, content=_folder_refusal(exc))
                 data, name = await asyncio.to_thread(imported.read_local, request.path, roots,
                                                      _confined_local_path)
             else:

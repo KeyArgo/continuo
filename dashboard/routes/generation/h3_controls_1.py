@@ -13,6 +13,10 @@ class H3ControlsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     target_id: str | None = None
+    # w46-b (VID-181): with steps and scheduler the answer carries the scheduler's own curve to start a drawing from.
+    steps: int | None = Field(default=None, ge=1, le=100)
+    scheduler: Literal["simple", "beta"] | None = None
+    sigma_shift_video: float | None = Field(default=None, ge=0.01, le=100.0)
 
 
 async def _h3k_object_info(client: Any, classes: Any) -> dict[str, Any]:
@@ -244,15 +248,16 @@ def _h3k_take_facts(request: SubmitRequest, plan: Mapping[str, Any] | None) -> d
     return facts
 
 
-async def _h3k_live_problems() -> tuple[dict[tuple[str, Any], str | None] | None, list[str] | None]:
-    """Per (control, value) the first live problem (None = available); (None, None) when unreachable."""
+async def _h3k_live_problems() -> tuple[dict[tuple[str, Any], str | None] | None, list[str] | None, list[str] | None]:
+    """Per (control, value) the first live problem (None = available), the listed MiniMax H3 LoRAs and the live
+    KSamplerSelect names (w46-b: pass rows); (None, None, None) when unreachable."""
     needs = _h3k_module.option_needs()
     client = _comfy_client_module.ComfyUIClient()
     try:
         info = await _h3k_object_info(client, [n[0] for rows in needs.values() for n in rows])
         live = await _image_live_loras()
     except Exception:  # noqa: BLE001 - engine down: every option is unchecked
-        return None, None
+        return None, None, None
     problems: dict[tuple[str, Any], str | None] = {}
     for key, rows in needs.items():
         problems[key] = next((p for p in (_h3k_module.class_problem(n, info) for n in rows) if p), None)
@@ -261,7 +266,7 @@ async def _h3k_live_problems() -> tuple[dict[tuple[str, Any], str | None] | None
     if live is not None:
         live = [name for name in live if (await asyncio.to_thread(_h3k_lora_family, name)) == _h3k_module.H3_FAMILY
                 and name.rsplit("/", 1)[-1] not in _h3k_module.PINNED_TURBO_LORAS]
-    return problems, live
+    return problems, live, _h3k_module.live_samplers(info)
 
 
 @router.post("/generation/h3/controls")
@@ -269,7 +274,14 @@ async def h3_controls(request: H3ControlsRequest) -> dict[str, Any]:
     """The H3 inspector controls: options, defaults, live availability (with the reason) and render proof."""
     if request.target_id is not None and request.target_id not in _h3k_module.TARGET_IDS:
         return _v4_error("invalid_request")
-    problems, loras = await _h3k_live_problems()
-    answer = _h3k_module.descriptor(problems, lora_names=loras)
+    if (request.steps is None) != (request.scheduler is None):
+        return {"error": "The curve needs steps and scheduler together", "reason_code": "invalid_request",
+                "expected": {"steps": "1-100", "scheduler": "simple|beta", "sigma_shift_video": "optional, 0.01-100 (12)"}}
+    problems, loras, samplers = await _h3k_live_problems()
+    answer = _h3k_module.descriptor(problems, lora_names=loras, samplers=samplers)
     answer["engine"] = "unchecked" if problems is None else "checked"
+    if request.steps is not None:
+        shift = request.sigma_shift_video if request.sigma_shift_video is not None else _h3k_module.DEFAULTS["sigma_shift_video"]
+        answer["curve"] = {"steps": request.steps, "scheduler": request.scheduler, "sigma_shift_video": shift,
+                           "sigmas": _h3k_module.sigma_curve(request.scheduler, request.steps, shift)}
     return answer

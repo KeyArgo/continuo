@@ -18,7 +18,7 @@ def write_recipe_sidecar(path: Path | str, envelope: dict[str, Any]) -> Path:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, target)
+        _win_io.replace(temporary, target)
         temporary = None
         return target
     finally:
@@ -28,7 +28,7 @@ def write_recipe_sidecar(path: Path | str, envelope: dict[str, Any]) -> Path:
 
 def _read_json(path: Path) -> dict[str, Any] | None:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(_win_io.read_text(path, encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     return value if isinstance(value, dict) else None
@@ -592,19 +592,19 @@ def _stamp_file_locked(path: Path, envelope: dict[str, Any]) -> Path:
             sidecar_backup = sidecar_backup_candidate
             sidecar_backup_candidate = None
         try:
-            os.replace(temporary_sidecar, sidecar_target)
+            _win_io.replace(temporary_sidecar, sidecar_target)
             temporary_sidecar = None
         except BaseException:
             rollback_complete = True
             raise
         try:
-            os.replace(temporary, path)
+            _win_io.replace(temporary, path)
             temporary = None
             media_committed = True
         except BaseException:
             try:
                 if sidecar_backup is not None:
-                    os.replace(sidecar_backup, sidecar_target)
+                    _win_io.replace(sidecar_backup, sidecar_target)
                     sidecar_backup = None
                 else:
                     sidecar_target.unlink(missing_ok=True)
@@ -667,7 +667,7 @@ def _image_job_recipe_write(job_ids: Any, *, target_id: Any, prompt: Any, shot_i
             try:
                 temporary.write_text(json.dumps(envelope, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
                 if not path.exists():
-                    os.replace(temporary, path)
+                    _win_io.replace(temporary, path)
             finally:
                 temporary.unlink(missing_ok=True)
     except Exception:  # noqa: BLE001 - a recipe note never fails a submit
@@ -745,7 +745,7 @@ def _image_job_title_write(job_ids: Any, title: Any) -> None:
                 temporary.write_text(json.dumps({"schema": "studio.image-title/1", "job_id": job_id, "title": text[:_IMAGE_TITLE_MAX]},
                                                 ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
                 if not path.exists():
-                    os.replace(temporary, path)
+                    _win_io.replace(temporary, path)
             finally:
                 temporary.unlink(missing_ok=True)
     except Exception:  # noqa: BLE001 - a title note never fails a submit

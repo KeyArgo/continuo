@@ -17,6 +17,11 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_audio_stems_win_io", Path(__file__).resolve().parents[1] / "studio_core" / "win_io.py")
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any, Callable, Mapping
 
 # One minimal environment for every child process (lane w39-env): dashboard/engine_process, loaded by path.
@@ -143,7 +148,7 @@ def write_flac(path: Path, samples: np.ndarray, rate: int, ffmpeg: str | os.Path
     if done.returncode != 0:
         temporary.unlink(missing_ok=True)
         raise StemsError("stems_write_failed", "A stem could not be written")
-    os.replace(temporary, path)
+    _win_io.replace(temporary, path)
 
 
 def run(*, source: Path, split: str, comfy: Any, out_dir: Path, ffmpeg: str | os.PathLike[str],

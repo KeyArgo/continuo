@@ -40,7 +40,7 @@ async def _image_box_selection(request: Any, intent: Mapping[str, Any], reader: 
             return _image_box_limited(moved, limit, contract)
         made = await asyncio.to_thread(boxes.box_mask if intent["box_mode"] == "mask" else boxes.region_mask, intent["boxes"], size)
     except boxes.BoxError as exc:
-        raise contract.EditRequestError(exc.code, exc.message) from exc
+        raise contract.EditRequestError(exc.code, exc.message, getattr(exc, "hint", None)) from exc
     return _image_box_limited(request.model_copy(update={"mask": ImageEditMask(png_b64=base64.b64encode(made["png"]).decode("ascii"))}), limit, contract)
 
 
@@ -303,9 +303,7 @@ async def image_box_prompt(request: ImageBoxPromptRequest) -> Any:
                         contract.where_phrase(bbox, crop), intent["target_id"]),
                         mask={"bbox": made["bbox"], "coverage_pct": made["coverage_pct"], "feather_px": made["feather_px"]})
         return body
-    except contract.EditRequestError as exc:
-        return _edit_error(422, exc.code, exc.message)
-    except boxes.BoxError as exc:
-        return _edit_error(422, exc.code, exc.message)
+    except (contract.EditRequestError, boxes.BoxError) as exc:
+        return _edit_refusal(422, exc)
     except Exception as exc:  # noqa: BLE001 - finite plugin boundary
         return _image_film_error_response(exc)

@@ -53,6 +53,7 @@ OP_PHRASES: dict[str, str] = {
     "set_enabled": "Clip on/off",
     "set_fades": "Fade",
     "set_format": "Format",
+    "set_frame": "Frame",
     "set_gain": "Gain",
     "set_label": "Rename clip",
     "set_marker": "Edit marker",

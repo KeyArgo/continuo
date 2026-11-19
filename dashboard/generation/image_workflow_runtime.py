@@ -8,6 +8,13 @@ from .comfy_failure import failure_reason as _comfy_failure_reason  # lane w24-r
 from .image_edit_service import upload_crop
 from .qwen_image_workflow_adapter import echo_owned
 
+# w46-eg E-a (IMG-225): ComfyUI sends progress and preview frames only to the websocket whose clientId is the prompt's
+# client_id, and draws a preview only when the prompt's extra_data asks for a method. The plugin's one preview reader
+# listens as this id (comfyui_preview.PREVIEW_CLIENT_ID); latent2rgb is ComfyUI's own preview. Both go into the submit
+# call only: the body recover/poll compare (_body, _owned) stays what 1.1.x sent, so its jobs still poll as theirs.
+PREVIEW_CLIENT_ID = "filmsuite-image-preview"
+PREVIEW_METHOD = "latent2rgb"
+
 
 class ImageWorkflowRuntime:
     def __init__(self, client, jobs, reader):
@@ -23,16 +30,9 @@ class ImageWorkflowRuntime:
         return adapter, {"prompt": run.compile_request(adapter, request), "client_id": job["provider"]["client_request_id"], "extra_data": {"studio": identity}}
 
     async def health(self, request):
-        adapter = workflow.compiler(request["target_id"])
-        graph = run.compile_request(adapter, request)
-        info = {}
-        for name in sorted({n["class_type"] for n in graph.values()}):
-            info.update(await self.client.object_info(name))
-        health = adapter.static_health(run.strip(request)[0], info)
-        missing = run.lora_health(graph, info)
-        if missing:  # a LoRA of the chain the engine does not list
-            health = {**health, "state": "missing", "missing_files": sorted(set(health.get("missing_files", [])) | set(missing))}
-        return health
+        """w45-s1 item 2: the one readiness answer (image_readiness.image_target_readiness), always asked fresh."""
+        from . import image_readiness
+        return await image_readiness.image_target_readiness(request["target_id"], client=self.client, request=request, fresh=True)
 
     async def submit(self, *, image_producer_job_id, request_snapshot, client_request_id, request_snapshot_sha256=None):
         job = self.jobs.get_job(image_producer_job_id)
@@ -47,7 +47,8 @@ class ImageWorkflowRuntime:
                 return {"kind": "malformed"}
             name = "filmsuite-ref-" + ref["sha256"][:32] + ".png [temp]"
             await asyncio.to_thread(upload_crop, comfyui_client.urlopen, self.client.origin, name, data)
-        receipt = await self.client.submit(body["prompt"], client_id=body["client_id"], extra_data=body["extra_data"])
+        receipt = await self.client.submit(body["prompt"], client_id=PREVIEW_CLIENT_ID,
+                                           extra_data={**body["extra_data"], "preview_method": PREVIEW_METHOD})
         pid = receipt.get("prompt_id") if isinstance(receipt, Mapping) else None
         if not isinstance(pid, str) or not pid or len(pid) > 256 or any(ord(ch) < 32 for ch in pid) or receipt.get("node_errors"):
             return {"kind": "malformed"}

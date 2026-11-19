@@ -33,6 +33,9 @@ class ImageWorkflowSubmitRequest(_ProjectRequest):
     # Lane w35-ui-3 (critic run 3 #11): the artist's own words when ``prompt`` is a caption built from them (Ideogram 4's
     # JSON caption); the job's human title in Jobs, Media and the Image stage. Never part of the snapshot.
     title: str | None = Field(default=None, min_length=1, max_length=2_000)
+    # w45-s9 item 1: the bridge action of the Hermes tool this run belongs to (a palette Generate the agent ran); the run
+    # is Hermes' only against the tool's grant for that action (job_authors_1._bridge_job_note), never by this field.
+    bridge_action_id: str | None = Field(default=None, pattern=r"^act_[0-9a-f]{32}$", min_length=36, max_length=36)
 
 
 class ImageWorkflowHealthRequest(_ProjectRequest):
@@ -84,7 +87,7 @@ def _image_workflow_module():
 async def image_workflow_health(request: ImageWorkflowHealthRequest) -> Any:
     workflow = _image_workflow_module()
     if request.target_id not in workflow.entries():
-        return _edit_error(422, "target_unavailable", "This Image target is not registered")
+        return _edit_error(422, "target_unavailable", _unregistered_target(request.target_id))  # w45-s4 item 6
     desc = workflow.entries()[request.target_id][1]["descriptor"]
     refs = [{"image": "filmsuite-ref-" + "0" * 32 + ".png [temp]", "role": r.role} for r in request.references]
     if not refs and desc["capabilities"]["edit"]:
@@ -96,7 +99,8 @@ async def image_workflow_health(request: ImageWorkflowHealthRequest) -> Any:
     except Exception:  # noqa: BLE001 - an adapter without manifest assets keeps the sent prompt
         manifest = {}
     probe = '{"caption": "Static check"}' if (manifest.get("prompt") or {}).get("format") == "json_object" else request.prompt
-    compiled = {"schema": request.schema_, "target_id": request.target_id, "prompt": probe, "controls": request.controls, "references": refs}
+    controls = _canonical_image_controls(request.target_id, request.controls)  # w45-s1 item 3 (IMG-254)
+    compiled = {"schema": request.schema_, "target_id": request.target_id, "prompt": probe, "controls": controls, "references": refs}
     loras, refused = await _image_workflow_loras(request.target_id, request.loras)
     if refused is not None:
         return refused
@@ -106,25 +110,54 @@ async def image_workflow_health(request: ImageWorkflowHealthRequest) -> Any:
     client_module = importlib.import_module(_image_contract_module().__package__ + ".comfyui_client")
     try:
         health = await runtime_module.ImageWorkflowRuntime(client_module.ComfyUIClient(), None, None).health(compiled)
-        return {**health, "availability": "runnable", "target_id": request.target_id}
-    except ValueError:
-        return _edit_error(422, "invalid_image_request", "The Image controls do not match the descriptor")
+        # w45-s1 item 2: the one readiness answer; availability says whether the engine running now takes the job.
+        if health.get("state") == "unreachable":
+            return {**health, "target_id": request.target_id}
+        return {**health, "availability": "runnable" if health.get("ready") else "unavailable", "target_id": request.target_id}
+    except ValueError as exc:
+        # w45-s1 item 3: the same named refusal as submit (control id, accepted values), never the fixed sentence.
+        return _workflow_refusal(exc)
     except Exception:
         engine = _comfy_endpoint_module.engine_state()  # w39-p2-tester item 2: say why, with the address
         return {"state": "unreachable", "inference_tested": False, "target_id": request.target_id, "engine": engine,
                 **({"reason": engine["reason"]} if engine.get("reason") else {})}
 
+def _image_not_ready(health: Mapping[str, Any]) -> JSONResponse:
+    """w45-s1 items 2-3 (HER-099): 503 image_target_not_ready names what is missing: the readiness facts (classes,
+    files, slots pinned versus live, engine version) and its one stating sentence."""
+    facts = {key: health.get(key) for key in ("missing_classes", "missing_files", "schema_problems", "engine") if health.get(key)}
+    return JSONResponse(status_code=503, content={"error": {"code": "image_target_not_ready",
+                                                            "message": health.get("reason") or "The image target cannot take a job on the running engine",
+                                                            **facts}})
+
+
+def _canonical_image_controls(target_id: str, controls: Any) -> Any:
+    """w45-s1 item 3 (IMG-254): a select written in its short form ("3:4") is the option it names ("3:4 (Portrait
+    Standard)"), before the snapshot, so the stored job holds the option exactly as the page writes it."""
+    entry = _image_workflow_module().entries().get(target_id)
+    if entry is None:
+        return controls
+    shared = importlib.import_module(_image_contract_module().__package__ + ".qwen_image_workflow_adapter")
+    return shared.canonical_controls(controls, entry[1]["descriptor"]["controls"])
 
 
 def _workflow_refusal(exc: BaseException) -> JSONResponse:
-    """w31-fix4 item 3 (IMG-223): 422 naming the adapter's own reason and the request field it is about."""
+    """w31-fix4 item 3 (IMG-223): 422 naming the adapter's own reason and the request field it is about.
+    w45-s1 item 3 (IMG-254): a refused control also names its id and what it takes (``accepted``).
+    w45-s19 item 2: the reason is one clean line (studio_core/refusal_text.one_line): CR, ESC, DEL and every other
+    control or bidi character a reason may carry from the caller becomes a space, never only the newline refused."""
     reason = str(exc) if type(exc).__name__ in ("WorkflowRequestError", "ContractError", "RunError") else ""
-    if not reason or len(reason) > 200 or "\n" in reason:
+    reason = _refusal_text.one_line(reason, 400) if reason else ""
+    if not reason or len(reason) > 200:
         return _edit_error(422, "invalid_image_request", "The Image request does not match its descriptor")
     words = (("control", "controls"), ("reference", "references"), ("lora", "loras"), ("size", "controls"), ("prompt", "prompt"))
     field = next((name for word, name in words if word in reason.lower()), None)
+    accepted = getattr(exc, "accepted", None)
+    control = getattr(exc, "control", None)
     return JSONResponse(status_code=422, content={"error": {"code": "invalid_image_request", "message": f"Refused: {reason}",
-                                                            "reason": reason, **({"problem_field": field} if field else {})}})
+                                                            "reason": reason, **({"problem_field": field} if field else {}),
+                                                            **({"control": control} if control and control != "controls" else {}),
+                                                            **({"accepted": accepted} if accepted is not None else {})}})
 
 @project_router.post("/projects/image-producer/workflow-submit")
 async def image_workflow_submit(request: ImageWorkflowSubmitRequest) -> Any:
@@ -135,12 +168,16 @@ async def image_workflow_submit(request: ImageWorkflowSubmitRequest) -> Any:
     """
     workflow = _image_workflow_module()
     if request.target_id not in workflow.entries():
-        return _edit_error(422, "target_unavailable", "This Image target is not registered")
-    async with _IMAGE_FILM_ROOT_LOCK_ASYNC:
-        root = _image_producer_root(request.owner_scope)
-        handoff = _image_operations_handoff(root, request.owner_scope)
-        jobs, states = handoff.producer_jobs(), handoff.image_states()
-        coordinator = handoff.producer_coordinator()
+        return _edit_error(422, "target_unavailable", _unregistered_target(request.target_id))  # w45-s4 item 6
+    request.controls = _canonical_image_controls(request.target_id, request.controls)  # w45-s1 item 3 (IMG-254)
+    try:
+        async with _IMAGE_FILM_ROOT_LOCK_ASYNC:
+            root = _image_producer_root(request.owner_scope)
+            handoff = _image_operations_handoff(root, request.owner_scope)
+            jobs, states = handoff.producer_jobs(), handoff.image_states()
+            coordinator = handoff.producer_coordinator()
+    except (_ImageFilmCompositionError, studio_core.ProjectError) as exc:
+        return _image_root_refusal(exc)
     refs = []
     for ref in request.references:
         source = _edit_owned_job(jobs, states, ref.image_producer_job_id)
@@ -213,8 +250,10 @@ async def image_workflow_submit(request: ImageWorkflowSubmitRequest) -> Any:
                 health = await runtime.health(snapshot["effective_input"]["workflow"])
             except Exception:
                 return _edit_engine_unreachable()
+            if health["state"] == "unreachable":
+                return _edit_engine_unreachable()
             if health["state"] != "ready_static":
-                return _edit_error(503, "image_target_not_ready", "Required files, nodes or controls are unavailable")
+                return _image_not_ready(health)
         # Batch (w1-imgout): picture i is its own ledger job with seed + i; picture 0 keeps the
         # single-picture key, so batch 1 is exactly the request before; a replay replays the whole run.
         members = []
@@ -227,12 +266,15 @@ async def image_workflow_submit(request: ImageWorkflowSubmitRequest) -> Any:
             member_job = await coordinator.submit(member_key, member, client_request_id=member_key)
             members.append((index, member["artist_input"]["seed"], member_job))
         job = members[0][2]
+        _job_runs_note([m[2]["image_producer_job_id"] for m in members])  # w45-s1 item 6 (MED-108): one run, one author
         # w28-fix item 2a (IMG-218): named like the hand path (producer_1.py, lane p6-name): each member's rule name is
         # reserved in <project>/naming.json now, so Jobs shows it while it runs and Keep writes <output>/<that name>.
         result_names = _image_result_names_reserve(request.owner_scope, [m[2]["image_producer_job_id"] for m in members])
         _image_job_recipe_write([m[2]["image_producer_job_id"] for m in members], target_id=request.target_id, prompt=request.prompt, shot_id=request.shot_id)
         _image_job_title_write([m[2]["image_producer_job_id"] for m in members], request.title)  # w35-ui-3 #11
         shot_id = _image_job_shot(job["image_producer_job_id"])
+        _bridge_job_note(request.bridge_action_id, job["image_producer_job_id"], owner_scope=request.owner_scope, kind="submit",
+                         operation_id=request.operation_id)  # w45-s9 item 1: the run's head; w45-s20: bound, before the caller's note
         _announce_image_jobs([(m[2]["image_producer_job_id"], None, m[2].get("state")) for m in members], request.owner_scope)
         # w41-qwen2: a fact about how the run goes (the area-edit route's "warnings" form), e.g. the Qwen rewriter ran
         # without its system prompt because that file is absent here; the key is absent when there is none.
@@ -255,3 +297,23 @@ async def image_workflow_submit(request: ImageWorkflowSubmitRequest) -> Any:
         # w31-fix4 item 3 (IMG-223): a refusal names its field and why (Ideogram 4: "prompt must be a JSON object"),
         # never only the generic descriptor sentence (the page and Hermes show the reason as it is).
         return _workflow_refusal(exc)
+
+
+def _image_root_refusal(exc: BaseException) -> JSONResponse:
+    """w45-s4 item 2 (release run finding 2): the project's Image state cannot be reached. 409 with the fact: no
+    project open in this process (``image_film_unavailable`` from a project scope: nothing opened the profile root
+    since the backend started), else the Image boundary's own code and sentence. Was HTTP 500."""
+    if getattr(exc, "code", None) == "image_film_unavailable":
+        return _edit_error(409, "project_not_open", "No project is open in this Continuo process")
+    if isinstance(exc, studio_core.ProjectError):
+        return JSONResponse(status_code=409, content=_project_error_response(exc))
+    return JSONResponse(status_code=409, content=_image_film_error_response(exc))
+
+
+def _unregistered_target(target_id: str) -> str:
+    """w45-s4 item 6: the refused id and the ids that are registered (was the fixed "This Image target is not registered").
+    w45-s10 item 2: the Krea 2 Create target is not a workflow target; the refusal names the tool it takes."""
+    if target_id == "krea2-turbo-t2i-create":
+        return (f"{target_id} is the Krea 2 render-spec target: continuo_image_submit takes it with a render_spec "
+                "(continuo_models_catalog Krea 2 rows, submit.render_spec)")
+    return f"{target_id} is not a registered Image target (registered: {', '.join(sorted(_image_workflow_module().entries()))})"

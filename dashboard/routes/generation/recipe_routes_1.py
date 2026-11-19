@@ -40,7 +40,7 @@ async def recipe_stamp(request: RecipeStampRequest) -> dict[str, Any]:
         return _error("Recipe stamping failed: local media or generation ledger is unavailable.")
     except (RecipeError, TypeError, ValueError) as exc:
         if isinstance(exc, _FolderNotApproved):
-            return _folder_refusal()
+            return _folder_refusal(exc)
         if isinstance(exc, _RebasePending):
             return {"error": str(exc), "reason_code": exc.reason_code}
         return _error(f"Recipe stamping failed: {exc}")
@@ -308,7 +308,7 @@ async def recipe_read(request: RecipeReadRequest) -> dict[str, Any]:
         recipe = _read_embedded_recipe(path)
     except RecipeError as exc:
         if isinstance(exc, _FolderNotApproved):
-            return {"recipe": None, "normalized_recipe": None, **_folder_refusal()}
+            return {"recipe": None, "normalized_recipe": None, **_folder_refusal(exc)}
         return {
             "recipe": None,
             "normalized_recipe": None,

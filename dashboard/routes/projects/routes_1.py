@@ -86,7 +86,7 @@ def _projects_create_sync(request: ProjectCreateRequest, *, allow_building_marke
             create_kwargs["allow_building_marker"] = True
         if request.copy_state is not None:
             if _film_caller() == "hermes" and request.copy_state.get("approvedRoots"):
-                return _folder_refusal()  # lane p5-prj (HER-012): a Hermes-made project approves no folder
+                return _folder_refusal(hermes_decision=True)  # lane p5-prj (HER-012): a Hermes-made project approves no folder
             create_kwargs["approved_roots"] = request.copy_state.get("approvedRoots", [])
             create_kwargs["copy_state"] = request.copy_state
         opened = _recent_project_store_factory().create_project(

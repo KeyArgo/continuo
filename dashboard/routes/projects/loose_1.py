@@ -18,7 +18,7 @@ class LooseFoldersWriteRequest(BaseModel):
 @project_router.put("/projects/loose/folders")
 async def projects_loose_folders(request: LooseFoldersWriteRequest) -> dict[str, Any]:
     if _film_caller() == "hermes":
-        return _folder_refusal()
+        return _folder_refusal(hermes_decision=True)
     roots: list[str] = []
     for root in request.approved_roots:
         if _approved_roots_module.canonical(root) is None or not Path(root.strip()).is_dir():
@@ -47,7 +47,7 @@ class FolderGrantsReport(BaseModel):
 @project_router.put("/projects/folder-grants")
 async def projects_folder_grants(request: FolderGrantsReport) -> dict[str, Any]:
     if _film_caller() == "hermes":
-        return _folder_refusal()
+        return _folder_refusal(hermes_decision=True)
     try:
         document = await asyncio.to_thread(_folder_grants().report, request.granted)
     except (OSError, ValueError):

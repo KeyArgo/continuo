@@ -41,6 +41,11 @@ import tempfile
 import threading
 from fractions import Fraction
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_footage_win_io", Path(__file__).resolve().parents[1] / "studio_core" / "win_io.py")
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any, Callable, Iterable
 
 # One minimal environment for every child process (lane w39-env): dashboard/engine_process, loaded by path.
@@ -261,7 +266,7 @@ class FootageIndex:
 
     def _read(self) -> dict[str, Any]:
         try:
-            value = json.loads(self.path.read_text(encoding="utf-8"))
+            value = json.loads(_win_io.read_text(self.path, encoding="utf-8"))
         except FileNotFoundError:
             return {}
         except (OSError, ValueError):
@@ -278,7 +283,7 @@ class FootageIndex:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(payload)
-            os.replace(name, self.path)
+            _win_io.replace(name, self.path)
         except BaseException:
             Path(name).unlink(missing_ok=True)
             raise
@@ -351,7 +356,7 @@ class FootageIndex:
 
     def _read_seen(self) -> dict[str, Any]:
         try:
-            value = json.loads(self._seen_path().read_text(encoding="utf-8"))
+            value = json.loads(_win_io.read_text(self._seen_path(), encoding="utf-8"))
         except (OSError, ValueError):
             return {}
         return value if isinstance(value, dict) else {}
@@ -364,7 +369,7 @@ class FootageIndex:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(json.dumps(seen, ensure_ascii=False))
-            os.replace(name, self._seen_path())
+            _win_io.replace(name, self._seen_path())
         except BaseException:
             Path(name).unlink(missing_ok=True)
             raise

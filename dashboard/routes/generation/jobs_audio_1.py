@@ -34,6 +34,8 @@ def _audio_jobs_for_scope(limit: int) -> list[dict[str, Any]]:
             rows.append({
                 "module": "music",
                 "job_id": job["job_id"],
+                # w45-s10 item 4: who started it (the caller at start; a job of before reads the artist).
+                "by": "hermes" if job.get("by") == "hermes" else "artist",
                 "state": state,
                 "raw_state": raw if isinstance(raw, str) else None,
                 "label": kind,
@@ -62,8 +64,7 @@ async def _jobs_list_with_audio(request: JobsListRequest) -> dict[str, Any]:
     except Exception:  # noqa: BLE001 - reported as a source state
         audio = []
         answer["sources"]["music"] = "unavailable"
-    for job in audio:
-        job["by"] = "artist"
+
     counts = _jobs_mark_dismissed(request.owner_scope, audio)
     if not request.include_dismissed:
         audio = [job for job in audio if not job["dismissed"]]

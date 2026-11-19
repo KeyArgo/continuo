@@ -131,6 +131,32 @@ def _ffprobe_json(ffprobe: Path, path: Path) -> dict[str, Any]:
         raise ExportError("source_unreadable", f"ffprobe could not read {path.name}.") from exc
 
 
+def probe_output(args: list[str], should_cancel: Any, *, timeout: float, code: str, message: str) -> str:
+    """One ffprobe run whose Stop stays live: polled every 0.2 s, killed and reaped on Stop (ExportError cancelled) or
+    past ``timeout`` (ExportError ``code`` / ``message``, also for a non-zero exit). w28-fix (CUT-182) wrote it for
+    count_frames; lane w45-s19 item 3 made it the shared path so the segment parameter check is cancellable too."""
+    try:
+        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), env=child_env())
+    except FileNotFoundError as exc:
+        raise ExportError("ffmpeg_unavailable", "ffprobe is not available at the configured path.") from exc
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            stdout, _stderr = proc.communicate(timeout=0.2)
+            break
+        except subprocess.TimeoutExpired:
+            if should_cancel is not None and should_cancel():
+                proc.kill(); proc.communicate()
+                raise ExportError("cancelled", "The export was cancelled.")
+            if time.monotonic() > deadline:
+                proc.kill(); proc.communicate()
+                raise ExportError(code, message)
+    if proc.returncode != 0:
+        raise ExportError(code, message)
+    return stdout
+
+
 def count_frames(ffprobe: Path, path: Path, should_cancel: Any = None) -> int:
     """Decoded video frame count (exact, slower than the container's nb_frames).
 
@@ -147,25 +173,8 @@ def count_frames(ffprobe: Path, path: Path, should_cancel: Any = None) -> int:
             raise ExportError("source_unreadable", f"ffprobe could not count frames of {path.name}.") from exc
         stdout = proc.stdout
     else:
-        try:
-            proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), env=child_env())
-        except FileNotFoundError as exc:
-            raise ExportError("ffmpeg_unavailable", "ffprobe is not available at the configured path.") from exc
-        deadline = time.monotonic() + 600
-        while True:
-            try:
-                stdout, _stderr = proc.communicate(timeout=0.2)
-                break
-            except subprocess.TimeoutExpired:
-                if should_cancel():
-                    proc.kill(); proc.communicate()
-                    raise ExportError("cancelled", "The export was cancelled.")
-                if time.monotonic() > deadline:
-                    proc.kill(); proc.communicate()
-                    raise ExportError("source_unreadable", f"ffprobe could not count frames of {path.name}.")
-        if proc.returncode != 0:
-            raise ExportError("source_unreadable", f"ffprobe could not count frames of {path.name}.")
+        stdout = probe_output(args, should_cancel, timeout=600, code="source_unreadable",
+                              message=f"ffprobe could not count frames of {path.name}.")
     value = stdout.strip().splitlines()[0] if stdout.strip() else ""
     return int(value) if value.isdigit() else 0
 

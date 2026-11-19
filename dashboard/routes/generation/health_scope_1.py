@@ -116,6 +116,11 @@ def _v4_exception(exc: BaseException, *, prefix: str | None = None) -> dict[str,
             return _v4_named(code, prefix, message)
     # The H3 validators raise fixed, path-free sentences (like H3ControlError): settings that are not valid.
     if isinstance(exc, (_h3c_module.H3ConditioningError, _h3m_module.H3MediaError)):
+        diagnostic = getattr(exc, "diagnostic", None)
+        if isinstance(diagnostic, dict):
+            import logging
+            logging.getLogger(__name__).debug("H3 control refusal: %s", diagnostic.get("detail"))
+            return _v4_named("payload_invalid", prefix, diagnostic["message"])
         return _v4_named("payload_invalid", prefix, str(exc))
     reason = getattr(exc, "reason_code", None)
     if reason in V4_ROUTE_REASON_CODES:

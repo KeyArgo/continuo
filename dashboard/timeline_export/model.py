@@ -83,6 +83,12 @@ class PlanClip:
     enabled: bool = True
     label: str = ""
     retime: PlanRetime | None = None
+    # Lane w46-d (issue #4): the clip's own framing (frame_chain.py); a piece of a clip (range export, nested
+    # cut, transition handle) keeps the move of the whole clip: frame_offset = its first frame's index in it,
+    # frame_whole = the whole clip's length (None = this clip's duration).
+    frame: Mapping[str, Any] | None = None
+    frame_offset: int = 0
+    frame_whole: int | None = None
 
     @property
     def record_end(self) -> int:
@@ -287,7 +293,8 @@ def load_timeline(document: Mapping[str, Any], timeline_id: str | None = None) -
     raise ExportError("timeline_not_found", "The requested timeline is not in the document.")
 
 
-def _clip(raw: Any, track: str, record_start: int, rate: Fraction, resolver: SourceResolver, offline: list[str]) -> PlanClip:
+def _clip(raw: Any, track: str, record_start: int, rate: Fraction, resolver: SourceResolver, offline: list[str],
+          storyline: bool = True) -> PlanClip:
     if not isinstance(raw, Mapping):
         raise _invalid(f"Track {track} has an item that is not an object.")
     item_id = raw.get("id")
@@ -320,12 +327,21 @@ def _clip(raw: Any, track: str, record_start: int, rate: Fraction, resolver: Sou
         if info.rate is not None and source_rate != info.rate:
             raise _invalid(f"{item_id}.source_rate does not match the source file's measured rate.")
     retime = _retime(raw.get("retime"), item_id) if source_rate is not None else None
+    from .frame_chain import read_frame
+    frame = read_frame(raw.get("frame"), item_id, _invalid)
+    if frame is not None and not storyline:
+        raise _invalid(f"{item_id}.frame: framing is for clips on the storyline (V1).")
+    span = raw.get("__frame_span")
+    part = ((frame or {}).get("move") or {}).get("part")  # lane w47-p3: a split clip shows frames at.. of the original move
+    offset, whole = (span[0], span[1]) if isinstance(span, (list, tuple)) and len(span) == 2 else \
+        (part["at"], part["of"]) if part else (0, None)
     clip = PlanClip(
         item_id, "clip", track, record_start, duration, source=dict(source), info=info,
         source_in=source_in if source_rate is not None else 0, source_rate=source_rate,
         audio=audio == "on" and info.has_audio and (retime is None or retime.sound_follows), enabled=enabled,
         label=_text(raw.get("label")),
         retime=retime,
+        frame=frame, frame_offset=int(offset), frame_whole=None if whole is None else int(whole),
     )
     if info.frames is not None and source_in + clip.source_frames_used(rate) > info.frames:
         raise _invalid(
@@ -489,7 +505,7 @@ def build_plan(document: Mapping[str, Any], resolver: SourceResolver, *, timelin
                     start = _frame(raw.get("record_start_frame") if isinstance(raw, Mapping) else None, "overlay record_start_frame")
                     if isinstance(raw, Mapping) and raw.get("type") == "gap":
                         raise _invalid("Gaps on the overlay track stay implicit.")
-                    overlays.append(_clip(raw, track_id, start, rate, resolver, offline))
+                    overlays.append(_clip(raw, track_id, start, rate, resolver, offline, storyline=False))
             else:
                 raise _invalid(f"Track {track_id} role must be storyline or overlay.")
         elif kind == "music":

@@ -48,6 +48,10 @@ byte for byte, see ``schema_of``):
   storyline clips: ``{id, kind, left, right, duration_frames, alignment}``, ``alignment`` centre |
   start | end splits the duration into the part before the cut (the left clip plays on into its
   handle) and after it (the right clip starts early, from its handle). The handles must exist.
+- (lane w46-d, issue #4) a V1 picture clip may carry ``frame {fit?, zoom, x, y, move?}``: its own fit,
+  zoom (permille of the fitted size), position (permille of the frame from its centre) and one move to
+  ``move {zoom, x, y, ease}`` on its last frame (``ops_frame.py`` has the rules and the split rounding).
+  V2 clips and nested cuts have no frame.
 """
 from __future__ import annotations
 
@@ -255,7 +259,8 @@ def uses_1_1(state: dict[str, Any]) -> bool:
             return True
         for track in timeline.get("tracks") or ():
             for item in track.get("items") or ():
-                if item.get("retime") is not None or (item.get("source") or {}).get("kind") == "cut":
+                if item.get("retime") is not None or (item.get("source") or {}).get("kind") == "cut" \
+                        or item.get("frame") is not None:
                     return True
     return False
 
@@ -305,7 +310,7 @@ _CLIP_KEYS = {
 
 def _clip(item: dict[str, Any], path: str, *, storyline: bool, rate: dict[str, int]) -> None:
     required = set(_CLIP_KEYS) if storyline else _CLIP_KEYS | {"record_start_frame"}
-    _exact(item, path, required, {"retime"} if storyline else {"attach", "retime"})
+    _exact(item, path, required, {"retime", "frame"} if storyline else {"attach", "retime"})
     _int(item["duration_frames"], path + ".duration_frames", minimum=1)
     source = _exact(item["source"], path + ".source", {"kind", "ref"}, {"slot"})
     kind = _enum(source["kind"], path + ".source.kind", ("take", "picture", "media", "cut"))
@@ -330,6 +335,13 @@ def _clip(item: dict[str, Any], path: str, *, storyline: bool, rate: dict[str, i
         _invalid(path + ".media_info.frames", f"a {kind} has a frame count")
     if kind == "cut" and (item.get("retime") is not None or item["audio"] != "off"):
         _invalid(path, "a nested cut keeps its own speed and sound (no retime, audio off)")
+    if "frame" in item:
+        from .ops_frame import check_frame
+        why = check_frame(item["frame"], path + ".frame", item["duration_frames"])
+        if why:
+            fail("invalid_timeline", why)
+        if kind == "cut":
+            _invalid(path + ".frame", "a nested cut keeps the framing of its own clips")
     if item.get("retime") is not None:
         _retime(item["retime"], path + ".retime")
         if frames is None:

@@ -27,6 +27,15 @@ from typing import Any, Mapping
 from .bounded_download import DownloadError, ExclusiveSink
 
 from .comfy_endpoint import DEFAULT_ORIGIN, comfy_origin  # noqa: F401 - DEFAULT_ORIGIN stays exported
+import importlib.util as _idle_util
+import pathlib as _idle_path
+
+# w47-q2: every /prompt is noted (engine_idle.py, loaded by path like its other callers: the package tree stays as is);
+# ComfyUI's models are freed after Continuo's own work has gone idle.
+_idle_spec = _idle_util.spec_from_file_location("film_suite_engine_idle", _idle_path.Path(__file__).with_name("engine_idle.py"))
+_idle = _idle_util.module_from_spec(_idle_spec)
+_idle_spec.loader.exec_module(_idle)
+note_engine_use = _idle.note_engine_use
 CONNECT_TIMEOUT_SECONDS = 2.0
 READ_TIMEOUT_SECONDS = 15.0
 MAX_JSON_BYTES = 16 * 1024 * 1024
@@ -445,7 +454,10 @@ class ComfyUIClient:
             body["client_id"] = client_id
         if extra_data is not None:
             body["extra_data"] = extra_data
-        return await self._request("POST", "/prompt", body=body)
+        try:
+            return await self._request("POST", "/prompt", body=body)
+        finally:
+            note_engine_use()  # w47-q2: a lost answer may still have queued it; the idle watcher frees it later
 
     async def recent_history(self, max_items: int = 100) -> dict[str, Any]:
         return await self._request(

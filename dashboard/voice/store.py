@@ -30,6 +30,11 @@ import tempfile
 import threading
 import uuid
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_voice_store_win_io", Path(__file__).resolve().parents[1] / "studio_core" / "win_io.py")
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any, Mapping
 
 SCHEMA = "studio.voice-project/1"
@@ -54,6 +59,20 @@ class VoiceStoreError(ValueError):
 def new_id(kind: str) -> str:
     return f"{kind}_{uuid.uuid4().hex[:12]}"
 
+
+
+def _load_refusal_text() -> Any:
+    """studio_core/refusal_text.py by path (lane w45-s11 item 3): the one sanitiser for caller text in a refusal."""
+    import importlib.util as _importlib_util
+    from pathlib import Path as _Path
+    path = _Path(__file__).resolve().parent.parent / "studio_core" / "refusal_text.py"
+    spec = _importlib_util.spec_from_file_location("film_suite_refusal_text_" + _Path(__file__).stem, path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_refusal_text = _load_refusal_text()
 
 def _bad(message: str) -> None:
     raise VoiceStoreError("invalid_voice_state", message)
@@ -89,8 +108,10 @@ def validate_body(body: Mapping[str, Any]) -> dict[str, Any]:
     for index, voice in enumerate(voices):
         at = f"voices[{index}]"
         _closed(voice, {"id", "name", "source", "clip", "words", "description", "seed", "profile"}, at)
-        if type(voice["id"]) is not str or not voice["id"].startswith("voice_") or not _ID.fullmatch(voice["id"]) or voice["id"] in ids:
-            _bad(f"{at}.id is invalid")
+        if type(voice["id"]) is not str or not voice["id"].startswith("voice_") or not _ID.fullmatch(voice["id"]):
+            _bad(f"{at}.id must be voice_<12 hex> (a new voice: any 12 lowercase hex digits)")
+        if voice["id"] in ids:
+            _bad(f"{at}.id {_refusal_text.one_line(voice['id'], 40)} is used twice")
         ids.add(voice["id"])
         _text(voice["name"], f"{at}.name", max_len=80, empty=False)
         if voice["source"] not in ("clip", "description"):
@@ -130,8 +151,10 @@ def validate_body(body: Mapping[str, Any]) -> dict[str, Any]:
     for index, line in enumerate(lines):
         at = f"lines[{index}]"
         _closed(line, {"id", "character", "text", "direction"}, at)
-        if type(line["id"]) is not str or not line["id"].startswith("line_") or not _ID.fullmatch(line["id"]) or line["id"] in line_ids:
-            _bad(f"{at}.id is invalid")
+        if type(line["id"]) is not str or not line["id"].startswith("line_") or not _ID.fullmatch(line["id"]):
+            _bad(f"{at}.id must be line_<12 hex> (a new line: any 12 lowercase hex digits)")
+        if line["id"] in line_ids:
+            _bad(f"{at}.id {_refusal_text.one_line(line['id'], 40)} is used twice")
         line_ids.add(line["id"])
         _text(line["character"], f"{at}.character", max_len=80, empty=False)
         # w35-ui item A: a new line (the page's "+") has no text yet; it is a draft, refused only at generate (line_empty)
@@ -143,7 +166,7 @@ def validate_body(body: Mapping[str, Any]) -> dict[str, Any]:
     selected: set[str] = set()
     for take_id, take in takes.items():
         if not _TAKE.fullmatch(take_id):
-            _bad("a take id is invalid")
+            _bad(f"takes key {_refusal_text.one_line(take_id, 60)} must be a take id studio:<36 hex and hyphens> (continuo_voice_takes studio_job_id)")
         _closed(take, {"line_id", "selected", "gain_db", "facts"}, f"takes[{take_id}]")
         # 32 KB: the facts carry the take's timed words (up to 400 x {w, start, end}) and its pauses.
         if type(take["facts"]) is not dict or len(json.dumps(take["facts"])) > MAX_FACT_BYTES:
@@ -168,7 +191,7 @@ def empty_body() -> dict[str, Any]:
 
 def _path(state_dir: Path, project_id: str) -> Path:
     if not re.fullmatch(r"prj_[0-9a-f]{32}", project_id):
-        raise VoiceStoreError("invalid_voice_state", "project id is invalid")
+        raise VoiceStoreError("invalid_voice_state", "project id must be prj_<32 hex>")
     return Path(state_dir) / f"{project_id}.json"
 
 
@@ -177,7 +200,7 @@ def read(state_dir: Path, project_id: str) -> dict[str, Any]:
     if not target.exists():
         return {"revision": 0, **empty_body()}
     try:
-        raw = target.read_bytes()
+        raw = _win_io.read_bytes(target)
         if len(raw) > MAX_BYTES:
             raise ValueError
         value = json.loads(raw.decode("utf-8"))
@@ -205,7 +228,7 @@ def write(state_dir: Path, project_id: str, expected_revision: int, body: Mappin
         try:
             with os.fdopen(fd, "wb") as handle:
                 handle.write(payload)
-            os.replace(name, target)
+            _win_io.replace(name, target)
         finally:
             if os.path.exists(name):
                 os.unlink(name)

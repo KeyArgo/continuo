@@ -45,12 +45,17 @@ import uuid
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_render_film_win_io", Path(__file__).resolve().parents[1] / "studio_core" / "win_io.py")
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any, Callable
 
 from .errors import ExportError
 from .ffmpeg_run import CancelFn, child_env, run_ffmpeg
 from .model import Plan, PlanClip
-from .resolver import count_frames
+from .resolver import count_frames, probe_output
 from .timebase import ffmpeg_rate, ffmpeg_seconds, seconds
 
 AUDIO_RATE = 48000
@@ -112,14 +117,28 @@ class RenderResult:
 
 
 def _fit_chain(width: int, height: int, *, pad: bool, fit: str = "fit") -> str:
+    # Every segment in limited range (CUT-207): a full-range source (JPEG still, phone clip) gave yuvj420p segments
+    # beside yuv420p ones, a parameter switch that re-initialises the film's filter graph. A limited source is unchanged.
     if fit == "stretch":
-        return f"scale={width}:{height}:flags=lanczos,setsar=1,format=yuv420p"
+        return f"scale={width}:{height}:flags=lanczos:out_range=tv,setsar=1,format=yuv420p"
     if fit == "fill":
-        return (f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
+        return (f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos:out_range=tv,"
                 f"crop={width}:{height}:(iw-ow)/2:(ih-oh)/2,setsar=1,format=yuv420p")
-    scale = f"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos"
+    scale = f"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos:out_range=tv"
     tail = f",pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black" if pad else ""
     return f"{scale}{tail},setsar=1,format=yuv420p"
+
+
+def _picture_chain(plan: Plan, clip: PlanClip, *, pad: bool, first: int = 0) -> str:
+    """The fit chain of one clip: the cut's fit, or the clip's own frame (lane w46-d, frame_chain.py) whose move is
+    counted from record offset ``first`` of this piece. A clip without ``frame`` gets exactly the cut-wide chain."""
+    from . import frame_chain
+    if clip.frame is None or clip.info is None:
+        return _fit_chain(plan.width, plan.height, pad=pad, fit=plan.fit)
+    if not frame_chain.moves(clip.frame):
+        return _fit_chain(plan.width, plan.height, pad=pad, fit=frame_chain.clip_fit(clip.frame, plan.fit))
+    return frame_chain.chain_for(plan.width, plan.height, clip.info.width, clip.info.height, clip.frame, plan.fit,
+                                 clip.frame_offset + first, clip.frame_whole or clip.duration)
 
 
 def _clip_input(clip: PlanClip, rate: Fraction) -> list[str]:
@@ -152,12 +171,12 @@ def _segment_command(ffmpeg: Path, clip: PlanClip, plan: Plan, out: Path, *, pad
     rate = ffmpeg_rate(plan.rate)
     if clip.kind == "gap" or clip.info is None or not clip.enabled:
         return [str(ffmpeg), "-y", "-f", "lavfi", "-i", f"color=black:s={plan.width}x{plan.height}:r={rate}",
-                "-frames:v", str(clip.duration), "-vf", "setsar=1,format=yuv420p", *_SEGMENT_CODEC, "-an", str(out)]
+                "-frames:v", str(clip.duration), "-vf", f"setsar=1,format=yuv420p,{plan.color.setparams()}", *_SEGMENT_CODEC, "-an", str(out)]
     if clip.retime is not None and _mapped(clip):
         return _mapped_command(ffmpeg, clip, plan, out, pad=pad, first=0, count=clip.duration)
     if clip.retime is not None:
         return _retimed_command(ffmpeg, clip, plan, out, pad=pad, first=0, count=clip.duration)
-    chain = f"{_conform(clip)},fps={rate},{_fit_chain(plan.width, plan.height, pad=pad, fit=plan.fit)}"
+    chain = f"{_conform(clip)},fps={rate},{_picture_chain(plan, clip, pad=pad)},{plan.color.setparams()}"
     return [str(ffmpeg), "-y", *_clip_input(clip, plan.rate), "-map", "0:v:0", "-vf", chain,
             "-frames:v", str(clip.duration), "-fps_mode", "cfr", "-r", rate, *_SEGMENT_CODEC, "-an", str(out)]
 
@@ -167,14 +186,16 @@ def _range_command(ffmpeg: Path, clip: PlanClip, plan: Plan, out: Path, first: i
     duration: its handles), at the sequence format."""
     if first == 0 and count == clip.duration:
         return _segment_command(ffmpeg, clip, plan, out, pad=True)
+    # A piece keeps the whole clip's move (lane w46-d): its first frame is offset ``first`` of the clip.
+    span = {"frame_offset": clip.frame_offset + first, "frame_whole": clip.frame_whole or clip.duration}
     if clip.kind == "gap" or clip.info is None or not clip.enabled or clip.is_still:
-        return _segment_command(ffmpeg, replace(clip, duration=count), plan, out, pad=True)
+        return _segment_command(ffmpeg, replace(clip, duration=count, **span), plan, out, pad=True)
     if clip.retime is not None and _mapped(clip):
         return _mapped_command(ffmpeg, clip, plan, out, pad=True, first=first, count=count)
     if clip.retime is not None:
         return _retimed_command(ffmpeg, clip, plan, out, pad=True, first=first, count=count)
     shifted = clip.source_frame_at(first, plan.rate)
-    return _segment_command(ffmpeg, replace(clip, source_in=shifted, duration=count), plan, out, pad=True)
+    return _segment_command(ffmpeg, replace(clip, source_in=shifted, duration=count, **span), plan, out, pad=True)
 
 
 def _retimed_command(ffmpeg: Path, clip: PlanClip, plan: Plan, out: Path, *, pad: bool, first: int, count: int) -> list[str]:
@@ -197,7 +218,7 @@ def _retimed_command(ffmpeg: Path, clip: PlanClip, plan: Plan, out: Path, *, pad
     extra_hi = 1 if slow and not retime.reverse and hi + 1 < clip.info.frames else 0
     lo, hi = lo - extra_lo, hi + extra_hi
     seek = max(Fraction(0), (Fraction(lo) - Fraction(1, 2)) / clip.source_rate)
-    fit = _fit_chain(plan.width, plan.height, pad=pad, fit=plan.fit)
+    fit = _picture_chain(plan, clip, pad=pad, first=first)
     r = ffmpeg_rate(rate)
     head = f"trim=end_frame={hi - lo + 1},setpts=PTS-STARTPTS," + ("reverse," if retime.reverse else "")
     if retime.freeze:
@@ -218,7 +239,7 @@ def _retimed_command(ffmpeg: Path, clip: PlanClip, plan: Plan, out: Path, *, pad
             chain = (f"{head}settb=expr={rate.denominator}/{rate.numerator},setpts='max(0\\,{pts}-{first})',"
                      f"select='{keep}',fps={r},tpad=stop_mode=clone:stop={count}")
     return [str(ffmpeg), "-y", "-ss", ffmpeg_seconds(seek), "-i", str(clip.info.path), "-map", "0:v:0",
-            "-vf", f"{chain},{fit}", "-frames:v", str(count), "-fps_mode", "cfr", "-r", r, *_SEGMENT_CODEC, "-an", str(out)]
+            "-vf", f"{chain},{fit},{plan.color.setparams()}", "-frames:v", str(count), "-fps_mode", "cfr", "-r", r, *_SEGMENT_CODEC, "-an", str(out)]
 
 
 # --- speed curves and AI frames (lane w6-tempo) ----------------------------------------------------
@@ -292,10 +313,18 @@ def run_mapped(command: list[str], plan: Plan, *, on_frame=None, should_cancel=N
         lo, hi = (max(0, lo - 1), hi) if retime.reverse else (lo, min(clip.info.frames - 1, hi + 1))
     used = clip.source_frames_used(rate)
     origin = (clip.source_in + used - 1 - hi) if retime.reverse else (lo - clip.source_in)
-    fit = _fit_chain(plan.width, plan.height, pad=pad == "1", fit=plan.fit)
+    from . import frame_chain
+    fit = _picture_chain(plan, clip, pad=pad == "1", first=first)
+    pw, ph, post = plan.width, plan.height, ""
+    if clip.frame is not None and frame_chain.moves(clip.frame):
+        # Lane w46-d: the source frames are fitted onto the bordered canvas; the move is drawn on the mapped frames.
+        fit, (pw, ph) = frame_chain.pre_chain(plan.width, plan.height, clip.info.width, clip.info.height,
+                                              frame_chain.clip_fit(clip.frame, plan.fit))
+        post = frame_chain.post_chain(plan.width, plan.height, (pw, ph), clip.frame, clip.frame_offset + first,
+                                      clip.frame_whole or clip.duration) + ","
     seek = max(Fraction(0), (Fraction(lo) - Fraction(1, 2)) / clip.source_rate)
     head = f"trim=end_frame={hi - lo + 1},setpts=PTS-STARTPTS," + ("reverse," if retime.reverse else "")
-    size = plan.width * plan.height * 3 // 2
+    size = pw * ph * 3 // 2
     work = Path(out).parent / f".{Path(out).stem}-map"
     work.mkdir(exist_ok=True)
     quiet = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
@@ -311,15 +340,16 @@ def run_mapped(command: list[str], plan: Plan, *, on_frame=None, should_cancel=N
             if retime.sampling == "ai":
                 if comfy is None:
                     from . import rife_comfy as comfy
-                comfy.interpolate(Path(ffmpeg), src, (plan.width, plan.height), n_src, mult, dense, work, should_cancel=should_cancel)
+                comfy.interpolate(Path(ffmpeg), src, (pw, ph), n_src, mult, dense, work, should_cancel=should_cancel)
             else:
                 make = (f"framerate=fps={24 * mult}:interp_start=0:interp_end=255:scene=100" if retime.sampling == "blend"
                         else f"minterpolate=fps={24 * mult}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1")
-                run_ffmpeg([ffmpeg, "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", f"{plan.width}x{plan.height}", "-framerate", "24",
+                run_ffmpeg([ffmpeg, "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", f"{pw}x{ph}", "-framerate", "24",
                             "-i", str(src), "-vf", f"{make},format=yuv420p", "-fps_mode", "passthrough", "-f", "rawvideo", str(dense)],
                            should_cancel=should_cancel, what=f"Segment {clip.id} in-betweens")
-        encoder = subprocess.Popen([ffmpeg, "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", f"{plan.width}x{plan.height}",
-                                    "-framerate", ffmpeg_rate(rate), "-i", "-", "-frames:v", str(count), *_SEGMENT_CODEC, "-an", str(out)],
+        encoder = subprocess.Popen([ffmpeg, "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", f"{pw}x{ph}",
+                                    "-framerate", ffmpeg_rate(rate), "-i", "-", "-vf", f"{post}setsar=1,{plan.color.setparams()}", "-frames:v", str(count),
+                                    *_SEGMENT_CODEC, "-an", str(out)],
                                    stdin=subprocess.PIPE, stderr=subprocess.DEVNULL, **quiet, env=child_env())
         try:
             with src.open("rb") as fs, (dense.open("rb") if dense is not None else open(src, "rb")) as fd:
@@ -357,12 +387,21 @@ def run_mapped(command: list[str], plan: Plan, *, on_frame=None, should_cancel=N
 DIP_COLOUR = {"dip_black": (16, 128, 128), "dip_white": (235, 128, 128)}  # limited-range yuv420p
 
 
+def record_window(start: int, length: int, rate: Fraction) -> str:
+    """A filter timeline expression true on record frames ``start .. start + length - 1`` and on no other, read from the
+    frame's time ``t`` with half a frame either side (millisecond time bases round frame times). Never the frame counter
+    ``n``: ffmpeg restarts it whenever it re-initialises the graph (CUT-207, issue #3)."""
+    lo, hi = (Fraction(2 * start - 1, 2) / rate), (Fraction(2 * (start + length) - 1, 2) / rate)
+    return f"gte(t,{ffmpeg_seconds(lo)})*lt(t,{ffmpeg_seconds(hi)})"  # inside the graph's single quotes
+
+
 def transition_weight(k: int, duration: int) -> Fraction:
     """The B weight of transition frame ``k`` of ``duration``: never 0 or 1 inside the transition."""
     return Fraction(k + 1, duration + 1)
 
 
-def _transition_command(ffmpeg: Path, kind: str, a: Path, b: Path, duration: int, out: Path, rate: Fraction) -> list[str]:
+def _transition_command(ffmpeg: Path, kind: str, a: Path, b: Path, duration: int, out: Path, rate: Fraction,
+                        tag: str = "setparams") -> list[str]:
     # Frame k from its timestamp (blend's N is not 0 on the first frame here: measured, ffmpeg 7.1).
     w = f"((round(T*{rate.numerator}/{rate.denominator})+1)/{duration + 1})"
     if kind == "dissolve":
@@ -373,7 +412,7 @@ def _transition_command(ffmpeg: Path, kind: str, a: Path, b: Path, duration: int
                  for plane, c in enumerate(colour)}
     blend = "blend=" + ":".join(f"{key}='{value}'" for key, value in exprs.items())
     return [str(ffmpeg), "-y", "-i", str(a), "-i", str(b), "-filter_complex",
-            f"[0:v:0]setpts=PTS-STARTPTS[a];[1:v:0]setpts=PTS-STARTPTS[b];[a][b]{blend},format=yuv420p[v]",
+            f"[0:v:0]setpts=PTS-STARTPTS[a];[1:v:0]setpts=PTS-STARTPTS[b];[a][b]{blend},format=yuv420p,{tag}[v]",
             "-map", "[v]", "-frames:v", str(duration), "-fps_mode", "cfr", "-r", ffmpeg_rate(rate), *_SEGMENT_CODEC, "-an", str(out)]
 
 
@@ -474,7 +513,7 @@ def render_film(
                 a, b = work / f"s{index:04d}a.mkv", work / f"s{index:04d}b.mkv"
                 render_piece(_range_command(ffmpeg, left, plan, a, left.duration - piece.before, piece.duration), a, piece.duration, f"Transition {piece.id} out of {left.id}")
                 render_piece(_range_command(ffmpeg, right, plan, b, -piece.before, piece.duration), b, piece.duration, f"Transition {piece.id} into {right.id}")
-                render_piece(_transition_command(ffmpeg, piece.kind, a, b, piece.duration, segment, plan.rate), segment, piece.duration, f"Transition {piece.id}")
+                render_piece(_transition_command(ffmpeg, piece.kind, a, b, piece.duration, segment, plan.rate, plan.color.setparams()), segment, piece.duration, f"Transition {piece.id}")
                 done += piece.duration
             segments.append(segment)
         overlay_files: list[tuple[PlanClip, Path, int]] = []
@@ -487,6 +526,7 @@ def render_film(
                        what=f"Overlay {clip.id}")
             done += length
             overlay_files.append((clip, segment, length))
+        check_segment_parameters(ffprobe, segments + [segment for _clip, segment, _n in overlay_files], should_cancel=should_cancel)
         concat = work / "concat.txt"
         concat.write_text("".join(f"file '{segment.name}'\n" for segment in segments), encoding="utf-8")
 
@@ -497,14 +537,16 @@ def render_film(
         for number, (clip, segment, length) in enumerate(overlay_files):
             inputs += ["-i", str(segment)]
             offset = ffmpeg_seconds(seconds(clip.record_start, plan.rate))
-            graph.append(f"[{next_index}:v:0]setpts=PTS-STARTPTS+{offset}/TB[ov{number}]")
+            # ffmpeg starts every input at 0 (no -copyts), so the offset alone places it: PTS-STARTPTS would keep a
+            # start that a filter graph re-initialisation resets (CUT-207).
+            graph.append(f"[{next_index}:v:0]setpts=PTS+{offset}/TB[ov{number}]")
             out_label = f"v{number}"
             # A segment carries no duration for its last frame, so framesync sees the
             # overlay's EOF at that frame's start and ``pass`` would drop it.  Repeat the
-            # last frame and let the timeline ``enable`` pin exactly the record frames.
-            last_frame = clip.record_start + length - 1
+            # last frame and let the timeline ``enable`` pin exactly the record frames, BY TIME (half a frame either
+            # side): the frame counter ``n`` restarts when ffmpeg re-initialises the graph (CUT-207).
             graph.append(f"[{video}][ov{number}]overlay=x=(W-w)/2:y=(H-h)/2:eof_action=repeat:format=yuv420:"
-                         f"enable='between(n,{clip.record_start},{last_frame})'[{out_label}]")
+                         f"enable='{record_window(clip.record_start, length, plan.rate)}'[{out_label}]")
             video = out_label
             next_index += 1
         audio_labels: list[str] = []
@@ -604,7 +646,7 @@ def render_film(
                 normed = render_mix.normalise_file(ffmpeg, temp, normalised, target_lufs=target_lufs, ceiling_dbtp=ceiling,
                                                    audio_args=audio_args, total_samples=total_samples, should_cancel=should_cancel, lra_lu=lra)
                 if normed["written"]:
-                    os.replace(normalised, temp)
+                    _win_io.replace(normalised, temp)
                 result_loudness = {"target": {"integrated_lufs": target_lufs, "true_peak_dbtp": ceiling},
                                    "before": normed["before"], "after": render_mix.measure(ffmpeg, temp),
                                    "normalization": normed["normalization"], "lra_target_lu": lra,
@@ -617,7 +659,7 @@ def render_film(
                                       f"The film's true peak is {peak:+.1f} dBTP, above the ceiling of {limit:+.1f} dBTP; nothing was exported.",
                                       {"true_peak_dbtp": peak, "ceiling_dbtp": limit, "integrated_lufs": result_loudness["after"]["integrated_lufs"]})
             master = verify_master(ffprobe, temp, quality, frames=total, rate=plan.rate, samples=total_samples) if quality in MASTER else None
-            os.replace(temp, out_path)
+            _win_io.replace(temp, out_path)
         finally:
             for leftover in (temp, normalised):
                 if leftover.exists():
@@ -668,6 +710,47 @@ def probe_streams(ffprobe: Path, path: Path) -> list[dict[str, Any]]:
         return json.loads(done.stdout).get("streams") or []
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise ExportError("render_mismatch", f"ffprobe could not read {path.name}.") from exc
+
+
+SEGMENT_PARAMETERS = ("width", "height", "pix_fmt", "sample_aspect_ratio", "time_base", "color_range", "color_space",
+                      "color_transfer", "color_primaries")
+
+
+def check_segment_parameters(ffprobe: Path, segments: list[Path], should_cancel: CancelFn | None = None) -> None:
+    """Fail closed unless every intermediate segment carries the same picture parameters (CUT-207, issue #3). A
+    change between two concatenated segments makes ffmpeg re-initialise the film's filter graph, which drops what
+    the graph holds and restarts its frame counters: burned-in subtitles landed on wrong frames and a V2 overlay was
+    lost. V2 segments have their own size; every other parameter must match.
+    Lane w45-s19 item 3: Stop stays live through this stage - read before every segment, and each probe runs through
+    resolver.probe_output (polled, killed on Stop), so a Stop during a probe ends the export within a poll."""
+    import json
+    entries = "stream=" + ",".join(SEGMENT_PARAMETERS)
+    first: dict[str, Any] | None = None
+    for index, segment in enumerate(segments):
+        if should_cancel is not None and should_cancel():
+            raise ExportError("cancelled", "The export was cancelled.")
+        unreadable = f"ffprobe could not read segment {segment.name}."
+        try:
+            stdout = probe_output([str(ffprobe), "-v", "error", "-select_streams", "v:0", "-show_entries", entries, "-of", "json", str(segment)],
+                                  should_cancel, timeout=120, code="render_mismatch", message=unreadable)
+            streams = json.loads(stdout).get("streams") or [{}]
+        except ExportError as exc:
+            if exc.code == "ffmpeg_unavailable":
+                raise ExportError("render_mismatch", unreadable) from exc
+            raise
+        except (OSError, ValueError) as exc:
+            raise ExportError("render_mismatch", unreadable) from exc
+        found = {key: streams[0].get(key) for key in SEGMENT_PARAMETERS}
+        if segment.name.startswith("o"):
+            found.pop("width"), found.pop("height")
+        if first is None:
+            first = found
+            continue
+        differs = {key: (first[key], value) for key, value in found.items() if key in first and first[key] != value}
+        if differs:
+            names = ", ".join(f"{key} {a} vs {b}" for key, (a, b) in differs.items())
+            raise ExportError("render_mismatch", f"Segment {segment.name} differs from {segments[0].name} in {names}; nothing was exported.",
+                              {"segment": segment.name, "differs": {key: list(pair) for key, pair in differs.items()}})
 
 
 def verify_master(ffprobe: Path, path: Path, quality: str, *, frames: int, rate: Fraction, samples: int) -> dict[str, Any]:

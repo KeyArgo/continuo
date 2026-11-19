@@ -34,7 +34,7 @@ def _shared():
 
 WorkflowRequestError = _shared().WorkflowRequestError
 REQUEST_SCHEMA = _shared().REQUEST_SCHEMA
-FAMILIES = frozenset({"anima", "flux2_klein", "ideogram4", "moss_image", "flux3_klein", "p_h3_image"})
+FAMILIES = frozenset({"anima", "flux2_klein", "ideogram4", "moss_image", "flux3_klein", "p_h3_image", "minimax_h3_image"})
 # The prompt-upsampler node that reads the artist's words, per target, and the control that switches it on.
 UPSAMPLER_CANVAS = {"flux3-klein-sd-create-v1": {"node_id": "32", "control": "prompt_upsampler"}}
 
@@ -78,7 +78,8 @@ class CatalogCreateWorkflowAdapter:
     def _values(manifest: dict, controls: Any) -> dict:
         offered = {c["id"]: c for c in manifest["descriptor"]["controls"]}
         if type(controls) is not dict or set(controls) - set(offered):
-            raise WorkflowRequestError("controls not offered")
+            raise _shared()._refused_control(  # w45-s19 item 2: every echoed key through the shared sanitiser
+                _shared().unknown_controls_reason(controls, offered), {"id": "controls"}, sorted(offered))
         values = {}
         for name, control in offered.items():
             values[name] = copy.deepcopy(controls.get(name, control["default"]))
@@ -161,18 +162,14 @@ class CatalogCreateWorkflowAdapter:
                     schema_mismatches.append(f"{class_type}.{name}")
                 elif node["inputs"][name] not in options:
                     missing_files.append(node["inputs"][name])
-        for slot in manifest["slots"]:
-            schema = object_info.get(slot["class_type"])
-            if not isinstance(schema, Mapping):
-                continue
-            live = ((schema.get("input") or {}).get(slot["schema_group"]) or {}).get(slot["input_name"])
-            # The run's own sampler / scheduler / file must exist live, not the author's whole list (lane w41-mac-a,
-            # PR #2 by @ShawnCRMer); the one rule lives in the Qwen boundary this adapter already shares.
-            if not _shared().slot_compatible(graph, slot, live):
-                schema_mismatches.append(f"{slot['class_type']}.{slot['input_name']}")
+        # w45-s1 item 1 (IMG-253): the one slot rule of the Qwen boundary (slot_problems): what this run sends must be
+        # valid live (the run's own sampler / scheduler / file, PR #2 by @ShawnCRMer; numbers inside the live range and
+        # grid); the recording's step, tooltip or default never refuse.
+        problems = _shared().slot_problems(graph, manifest, object_info)
+        schema_mismatches += [f"{p['class_type']}.{p['input']}" for p in problems]
         return {"state": "missing" if missing_classes or missing_files or schema_mismatches else "ready_static",
                 "missing_classes": sorted(set(missing_classes)), "missing_files": sorted(set(missing_files)),
-                "schema_mismatches": sorted(set(schema_mismatches)), "inference_tested": False,
+                "schema_mismatches": sorted(set(schema_mismatches)), "schema_problems": problems, "inference_tested": False,
                 "availability": manifest["descriptor"]["availability"]}
 
     def effective_prompt(self, entry: dict, expected_body: dict) -> str | None:

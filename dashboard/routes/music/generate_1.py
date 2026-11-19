@@ -81,7 +81,7 @@ def _music_gen_error(exc: BaseException) -> JSONResponse:
     if isinstance(exc, studio_core.ProjectError):
         return JSONResponse(status_code=404 if exc.code == "project_not_found" else 503,
                             content={"error": {"code": exc.code, "message": "The project could not be read"}})
-    return JSONResponse(status_code=503, content={"error": {"code": "music_unavailable", "message": "Music is unavailable"}})
+    return _audio_route_fault("music", exc)
 
 
 def _music_gen_state_dir() -> Path:
@@ -92,7 +92,7 @@ def _music_gen_state_dir() -> Path:
 def _music_gen_read(project_id: str) -> dict[str, Any]:
     path = _music_gen_state_dir() / f"{project_id}.json"
     try:
-        body = json.loads(path.read_text(encoding="utf-8"))
+        body = json.loads(_win_io.read_text(path, encoding="utf-8"))
     except FileNotFoundError:
         return {"schema": "studio.music-takes/1", "takes": {}}
     if not isinstance(body, dict) or body.get("schema") != "studio.music-takes/1" or not isinstance(body.get("takes"), dict):
@@ -108,7 +108,7 @@ def _music_gen_update(project_id: str, change: Callable[[dict[str, Any]], None])
         folder.mkdir(parents=True, exist_ok=True)
         temporary = folder / f".{project_id}.{uuid.uuid4().hex}.tmp"
         temporary.write_text(json.dumps(body, ensure_ascii=False, sort_keys=True), encoding="utf-8")
-        os.replace(temporary, folder / f"{project_id}.json")
+        _win_io.replace(temporary, folder / f"{project_id}.json")
         return body
 
 
@@ -293,7 +293,7 @@ def _music_gen_generate(request: MusicGenGenerateRequest) -> dict[str, Any]:
         for take in planned:
             _MUSIC_GEN_QUEUE.append({"take_id": take["take_id"], "project_id": project_id, "directory": directory, "output": str(output),
                                      "project_name": project_name, "target": target, "values": rows[take["take_id"]]["values"],
-                                     "stages": stages, "state": "waiting"})
+                                     "stages": stages, "state": "waiting", "by": by})
     _music_gen_wake_worker()
     return {**answer, "replayed": False}
 
@@ -324,8 +324,11 @@ def _music_gen_run_one(item: dict[str, Any]) -> None:
             generation_request = generation.GenerationRequest(
                 client_request_id=f"music-{take_id}", provider_id="comfyui-local", target_id=manifest["id"], args=args,
                 save_to=str(save_path), approved_roots=[str(folder)], project_id=project_id)
+            # Lane w45-s6 item 3: this process owns the row before it exists; rows of a dead process close first.
+            _take_admit(store, _MUSIC_GEN_CONNECTION, generation_request.client_request_id)
             record = store.create_or_get_job(generation_request, connection_id=_MUSIC_GEN_CONNECTION, frozen_destination=str(folder),
                                              requested_basename=name)
+            _job_authors_note([record.studio_job_id], item.get("by") or "artist")  # w45-s10 item 4: the take's author
             _music_gen_set(project_id, take_id, studio_job_id=record.studio_job_id)
 
         def on_stage(stage: str, facts: dict[str, Any]) -> None:
@@ -367,34 +370,33 @@ def _music_gen_run_one(item: dict[str, Any]) -> None:
             except Exception:  # noqa: BLE001
                 pass
         _music_gen_set(project_id, take_id, state="failed", stage=None, error=str(exc)[:200] or "The take failed",
-                       code=getattr(exc, "code", None) or "take_failed")
+                       code=getattr(exc, "code", None) or getattr(exc, "reason_code", None) or "take_failed")
+    if audio:
+        _take_release(store, f"music-{take_id}")
     try:
         film_events.media_changed(f"film_owner:{project_id}")
     except Exception:  # noqa: BLE001
         pass
 
 
+# Lane w45-s8 item 3: one worker, decided under the queue lock (generation/take_owners_1.py _take_worker). A take
+# whose start raised (its own code records every failure it expects) is recorded failed; the error's class goes to the
+# log only (w45-s19 item 4: no class name in artist text).
+_MUSIC_GEN_WORKER: dict[str, bool] = {"active": False}
+
+
 def _music_gen_worker() -> None:
-    while True:
-        with _MUSIC_GEN_QUEUE_LOCK:
-            item = next((entry for entry in _MUSIC_GEN_QUEUE if entry["state"] == "waiting"), None)
-            if item is None:
-                return
-            item["state"] = "started"
-        try:
-            _music_gen_run_one(item)
-        finally:
-            with _MUSIC_GEN_QUEUE_LOCK:
-                _MUSIC_GEN_QUEUE.remove(item)
+    _take_worker(_MUSIC_GEN_QUEUE, _MUSIC_GEN_QUEUE_LOCK, _MUSIC_GEN_WORKER, _music_gen_run_one, _music_gen_start_failed)
+
+
+def _music_gen_start_failed(item: dict[str, Any], exc: BaseException) -> None:
+    _AUDIO_FAULT_LOG.warning("music take %s could not be started: %s", item.get("take_id"), type(exc).__name__, exc_info=exc)
+    _music_gen_set(item["project_id"], item["take_id"], state="failed", stage=None, code="take_failed",
+                   error="The take could not be started")
 
 
 def _music_gen_wake_worker() -> None:
-    with _MUSIC_GEN_QUEUE_LOCK:
-        if any(t.is_alive() for t in _MUSIC_GEN_THREADS):
-            return
-        thread = threading.Thread(target=_music_gen_worker, name="fs-music-takes", daemon=True)
-        _MUSIC_GEN_THREADS[:] = [thread]
-        thread.start()
+    _take_wake(_MUSIC_GEN_QUEUE_LOCK, _MUSIC_GEN_WORKER, _MUSIC_GEN_THREADS, _music_gen_worker, "fs-music-takes")
 
 
 class _MusicGenWatch:
@@ -428,8 +430,21 @@ async def music_gen_generate(request: MusicGenGenerateRequest):
         return _music_gen_error(exc)
 
 
+def _music_gen_held_elsewhere(store: Any, take: Mapping[str, Any]) -> bool:
+    """A take another live Hermes process (same home) is making: its ledger row is still active after the settle."""
+    job_id = take.get("studio_job_id")
+    if not isinstance(job_id, str):
+        return False
+    try:
+        return store.get_job(job_id).state in ("submitting", "queued", "running")
+    except Exception:  # noqa: BLE001 - no row: not held
+        return False
+
+
 def _music_gen_takes(request: MusicGenTakesRequest) -> dict[str, Any]:
     _directory, project_id, _roots, _name = _music_gen_project(request.project_ref)
+    store = _comfy_store()
+    _take_settle(store, _MUSIC_GEN_CONNECTION)  # lane w45-s6 item 3: a row of a dead process reads interrupted, not running
     body = _music_gen_read(project_id)
     with _MUSIC_GEN_QUEUE_LOCK:
         live = {entry["take_id"] for entry in _MUSIC_GEN_QUEUE if entry["project_id"] == project_id}
@@ -439,8 +454,8 @@ def _music_gen_takes(request: MusicGenTakesRequest) -> dict[str, Any]:
         if wanted is not None and take_id not in wanted:
             continue
         state, error, code = take["state"], take.get("error"), take.get("code")
-        if state in ("waiting", "running") and take_id not in live:
-            state, error, code = "failed", "The take was stopped", "take_interrupted"
+        if state in ("waiting", "running") and take_id not in live and not _music_gen_held_elsewhere(store, take):
+            state, error, code = "failed", _TAKE_INTERRUPTED, "take_interrupted"
         facts = take.get("facts") or {}
         out.append({"take_id": take_id, "target_id": take["target_id"], "state": state, "stage": take.get("stage"),
                     "progress": _MUSIC_GEN_PROGRESS.get(take_id) if state == "running" else (1.0 if state == "ready" else None),

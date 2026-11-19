@@ -335,7 +335,10 @@ def validate_args(target_id: str, args: Mapping[str, Any]) -> dict[str, Any]:
                 controls = h3k.validate_controls(target_id, args, steps_value if type(steps_value) is int else 0)
             h3k.batch_args(args)
         except ValueError as exc:
-            raise _fail(str(exc)) from None
+            error = _fail(str(exc))
+            if isinstance(getattr(exc, "diagnostic", None), dict):
+                error.diagnostic = exc.diagnostic
+            raise error from exc
         args = h3k.split_args(args)[0]
     allowed = SCALAR_KEYS | MEDIA_KEYS[target_id]
     names = set(args)
@@ -1034,13 +1037,15 @@ async def conditioning_static_health(
     return answer("ready_static", None)
 
 
-_CONTROL_KEYS = frozenset({"turbo", "turbo_strength", "recipe", "sigma_shift_video", "sigma_shift_audio", "loras",
-                           "attention", "sparse", "sparsity", "cache", "engine", "count", "take_index"})
 _H3_CONTROLS: list[Any] = []
 
 
 def _controls_requested(args: Any) -> bool:
-    return isinstance(args, Mapping) and any(key in args for key in _CONTROL_KEYS)
+    """Any control or batch key: the keys are h3_controls.CONTROL_KEYS | BATCH_KEYS (one place, w46-b)."""
+    if not isinstance(args, Mapping):
+        return False
+    h3k = _h3_controls()
+    return any(key in args for key in h3k.CONTROL_KEYS | h3k.BATCH_KEYS)
 
 
 def _h3_controls() -> Any:

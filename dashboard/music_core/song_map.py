@@ -3,8 +3,8 @@
 No torch here.  The analysis runs in the Film-Suite-owned song engine
 (``scripts/install-song-engine.py`` -> ``engines/song-analysis/engine.json``, schema
 ``studio.song-engine/1``), one subprocess per job (``song_map_runner.py``), JSON on
-stdin/stdout; the process exits after the job, which releases its GPU memory.  GPU only
-when the shared ComfyUI ``GET /queue`` is empty, else CPU; device, wall time and nvidia-smi
+stdin/stdout; the process exits after the job, which releases its GPU memory.  GPU unless
+the shared ComfyUI ``GET /queue`` is busy (ComfyUI not running leaves the GPU free), then CPU; device, wall time and nvidia-smi
 memory before/after are recorded per job.
 
 Engine choices (eval/bench/RESULTS.md, binding): sections SongFormer (B1), drums ADTOF
@@ -30,6 +30,11 @@ import subprocess
 import time
 import urllib.request
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_song_map_win_io", Path(__file__).resolve().parents[1] / "studio_core" / "win_io.py")
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any, Callable
 
 # One way to start an engine python (lane p14-sam, AUD-062): dashboard/engine_process, loaded by path like its siblings.
@@ -162,7 +167,8 @@ def choose_device(queue: str) -> str:
     # macOS (PR #2 by @ShawnCRMer): Apple Silicon has no CUDA; its GPU is Metal (torch "mps"), shared with ComfyUI
     # the same way. Elsewhere unchanged.
     gpu = "mps" if local_data.is_macos() else "cuda"
-    return gpu if queue == "empty" else "cpu"
+    # AUD-065: ComfyUI not running (unreachable) leaves the GPU free; only a busy ComfyUI queue sends the map to the CPU.
+    return "cpu" if queue == "busy" else gpu
 
 
 def _weights(record: dict[str, Any]) -> dict[str, str]:
@@ -367,7 +373,7 @@ def read_cached(cache_dir: Path, track_sha256: str) -> dict[str, Any] | None:
     if engine_sha is None:
         return None
     try:
-        data = json.loads(cache_path(cache_dir, track_sha256, engine_sha).read_text(encoding="utf-8"))
+        data = json.loads(_win_io.read_text(cache_path(cache_dir, track_sha256, engine_sha), encoding="utf-8"))
     except (OSError, ValueError):
         return None
     ok = isinstance(data, dict) and data.get("schema") == SCHEMA and data.get("track_sha256") == track_sha256 \
@@ -503,7 +509,7 @@ def _write_cache(cache_dir: Path, track_sha256: str, engine_sha: str, out: dict[
     target = cache_path(cache_dir, track_sha256, engine_sha)
     tmp = target.with_suffix(".part")
     tmp.write_text(json.dumps({k: v for k, v in out.items() if k != "cached"}), encoding="utf-8")
-    tmp.replace(target)
+    _win_io.replace(tmp, target)
 
 
 # ---------------------------------------------------------------- words without lyrics (lane w18-amap, AUD-135)

@@ -73,46 +73,46 @@ def normalize(request: Mapping[str, Any], width: int, height: int) -> dict[str, 
     """Validate and canonicalise one request against the picture size."""
     mode = request.get("mode")
     if mode not in MODES:
-        raise MaskJobError("invalid_mask_request", "Mask request is invalid")
+        raise MaskJobError("invalid_mask_request", f"Mask mode is one of {', '.join(MODES)}")
     out: dict[str, Any] = {"mode": mode}
     if mode == "background":
         return out
     threshold = request.get("threshold", 0.5)
     refine = request.get("refine_iterations", 2)
     if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not 0.0 <= float(threshold) <= 1.0:
-        raise MaskJobError("invalid_mask_request", "Mask request is invalid")
+        raise MaskJobError("invalid_mask_request", "Mask threshold is a number from 0 to 1")
     if isinstance(refine, bool) or not isinstance(refine, int) or not 0 <= refine <= 5:
-        raise MaskJobError("invalid_mask_request", "Mask request is invalid")
+        raise MaskJobError("invalid_mask_request", "Mask refine_iterations is a whole number from 0 to 5")
     out["threshold"] = round(float(threshold), 3)
     out["refine_iterations"] = refine
     if mode == "points":
         points = request.get("points")
         if not isinstance(points, list) or not 1 <= len(points) <= MAX_POINTS:
-            raise MaskJobError("invalid_mask_request", "Mask request is invalid")
+            raise MaskJobError("invalid_mask_request", f"Mask points is a list of 1 to {MAX_POINTS} points {{x, y, label}}")
         clean = []
-        for point in points:
+        for index, point in enumerate(points):
             if not isinstance(point, Mapping):
-                raise MaskJobError("invalid_mask_request", "Mask request is invalid")
+                raise MaskJobError("invalid_mask_request", f"Mask points[{index}] is an object {{x, y, label}}")
             x, y, label = point.get("x"), point.get("y"), point.get("label", 1)
             if any(isinstance(v, bool) or not isinstance(v, int) for v in (x, y)) or label not in (0, 1) \
                     or not (0 <= x < width and 0 <= y < height):
-                raise MaskJobError("invalid_mask_request", "Mask request is invalid")
+                raise MaskJobError("invalid_mask_request", f"Mask points[{index}] takes whole-pixel x 0-{width - 1}, y 0-{height - 1} and label 0 or 1")
             clean.append({"x": x, "y": y, "label": label})
         if not any(p["label"] == 1 for p in clean):
-            raise MaskJobError("invalid_mask_request", "Mask request is invalid")
+            raise MaskJobError("invalid_mask_request", "Mask points need at least one point with label 1")
         out["points"] = clean
     elif mode == "box":
         box = request.get("box")
         if not isinstance(box, list) or len(box) != 4 or any(isinstance(v, bool) or not isinstance(v, int) for v in box):
-            raise MaskJobError("invalid_mask_request", "Mask request is invalid")
+            raise MaskJobError("invalid_mask_request", "Mask box is [x, y, w, h] in whole pixels")
         x, y, w, h = box
         if x < 0 or y < 0 or w < 2 or h < 2 or x + w > width or y + h > height:
-            raise MaskJobError("invalid_mask_request", "Mask request is invalid")
+            raise MaskJobError("invalid_mask_request", f"Mask box must lie on the {width} x {height} picture and be at least 2 x 2 pixels")
         out["box"] = [x, y, w, h]
     else:
         text = request.get("text")
         if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT or any(ord(c) < 32 for c in text):
-            raise MaskJobError("invalid_mask_request", "Mask request is invalid")
+            raise MaskJobError("invalid_mask_request", f"Mask text is one line of 1 to {MAX_TEXT} characters")
         out["text"] = " ".join(text.split())
     return out
 

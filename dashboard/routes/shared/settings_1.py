@@ -21,6 +21,12 @@ _settings_root_spec = _settings_util.spec_from_file_location(
 _settings_root_module = _settings_util.module_from_spec(_settings_root_spec)
 _settings_root_spec.loader.exec_module(_settings_root_module)
 _SETTINGS_FOLDER_KEYS = (_settings_root_module.ROOT_SETTING, _settings_root_module.MODELS_SETTING)
+# Lane w47-q2: unload_after_minutes (generation/engine_idle.py: ComfyUI's models are freed that many minutes after
+# Continuo's last job; 0 = never). Same read and write path; Hermes may write it (it moves no data anywhere).
+_settings_idle_spec = _settings_util.spec_from_file_location(
+    "film_suite_engine_idle", Path(__file__).resolve().parent / "generation" / "engine_idle.py")
+_settings_idle_module = _settings_util.module_from_spec(_settings_idle_spec)
+_settings_idle_spec.loader.exec_module(_settings_idle_module)
 
 _SETTINGS_MESSAGES = {
     "settings_invalid": "Not a valid address (scheme://host:port)",
@@ -29,6 +35,7 @@ _SETTINGS_MESSAGES = {
     "settings_managed": "Plugin settings are managed by the administrator",
     "settings_unavailable": "Hermes' settings writer is not available in this process (the plugin is not registered here)",
     "settings_folder_artist": "A folder is the artist's own setting: Continuo reads the models and custom nodes there",
+    "settings_minutes": "Minutes from 0 to 1440 (0 = never)",
 }
 
 
@@ -74,9 +81,18 @@ def _settings_is_loopback(origin: str) -> bool:
     return _comfy_endpoint_module.is_loopback_host(urlparse(origin).hostname)
 
 
+def _settings_minutes_read() -> dict[str, Any]:
+    """The minutes after Continuo's last job before ComfyUI's models are freed (unset = the default)."""
+    idle = _settings_idle_module
+    value = idle.minutes_setting()
+    return {"key": idle.SETTING_KEY, "value": value, "default": idle.DEFAULT_MINUTES,
+            "reason": None if value is not None else "The saved minutes are not a whole number from 0 to 1440"}
+
+
 def _settings_read_sync() -> dict[str, Any]:
     return {"plugin": "film-suite", "settings": {"comfy_url": _settings_comfy_url_read(),
-                                                 **{key: _settings_root_module.describe(key) for key in _SETTINGS_FOLDER_KEYS}}}
+                                                 **{key: _settings_root_module.describe(key) for key in _SETTINGS_FOLDER_KEYS},
+                                                 "unload_after_minutes": _settings_minutes_read()}}
 
 
 @router.get("/settings")
@@ -92,6 +108,7 @@ class SettingsWriteRequest(BaseModel):
     comfy_url: str | None = Field(default=None, max_length=512)
     comfy_root: str | None = Field(default=None, max_length=1024)
     comfy_models: str | None = Field(default=None, max_length=1024)
+    unload_after_minutes: Any = None  # checked in the route: a refusal in the house style, not a schema error
 
 
 def _settings_save_sync(values: dict[str, Any]) -> list[str]:
@@ -146,6 +163,11 @@ async def film_suite_settings_write(request: SettingsWriteRequest) -> Any:
         if _settings_root_module.variable_value(key):
             return _settings_fact("settings_overridden", _settings_root_module.VARIABLES[key] + " is set and overrides this setting", 409)
         values[key] = folder
+    if request.unload_after_minutes is not None:
+        minutes = _settings_idle_module.valid_minutes(request.unload_after_minutes)
+        if minutes is None:
+            return _settings_refusal("settings_minutes")
+        values["unload_after_minutes"] = minutes
     try:
         written = await asyncio.to_thread(_settings_save_sync, values) if values else []
     except PermissionError:

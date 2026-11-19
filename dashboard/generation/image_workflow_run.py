@@ -64,6 +64,8 @@ UNSUPPORTED: dict[str, str] = {
     # w6-gptimage: a subscription model made by OpenAI's service; nothing local to load a LoRA into.
     "gpt-image-2-create-v1": "GPT Image is made by your ChatGPT (Codex) subscription; it takes no LoRA",
     "gpt-image-2-edit-v1": "GPT Image is made by your ChatGPT (Codex) subscription; it takes no LoRA",
+    # w46-c: MiniMax H3 video LoRAs were trained on another transformer (the H3 video model); none is known to fit.
+    "minimax-h3-image-create-v1": "MiniMax H3 video LoRAs were trained on another transformer; MiniMax-H3-Image takes none of them",
 }
 # One picture per request on a subscription target (no seed to vary, every picture is one paid request).
 SINGLE_PICTURE = frozenset({"gpt-image-2-create-v1", "gpt-image-2-edit-v1"})
@@ -72,6 +74,7 @@ FAMILY_LABELS: dict[str, str] = {
     "anima": "Anima", "flux2_klein": "FLUX.2 Klein", "flux3_klein": "FLUX.3 Klein", "moss_image": "MOSS-Image",
     "qwen_image_2_1": "Qwen-Image 2.1", "krea2": "Krea 2", "ideogram4": "Ideogram 4",
     "p_h3_image": "MiniMax H3",  # w24-h3img: H3 LoRAs (lora_library names them MiniMax H3) fit the FL2VA transformer
+    "minimax_h3_image": "MiniMax-H3-Image",  # w46-c
 }
 # Real renders with one matching LoRA through the Suite (lane w1-imgout, 2026-10-21; seconds = route time).
 # w39-face 6: every LORA_ROOTS target is offered; a render record only changes the reason (the tooltip), not the offer.
@@ -233,10 +236,19 @@ def member_controls(controls: Mapping[str, Any], seed_default: int, index: int) 
 SIDE_LIMIT_PX: dict[str, int] = {"ideogram4-create-v1": 2048}
 
 
+# w46-c (IMG-228): with a reference picture MiniMax-H3-Image turns soft above about 4 MP (the artist's renders of 13 Nov);
+# the page's Megapixels line and the submit warning read this one fact. Never a cap: nothing is lowered or refused.
+SOFT_WITH_REFERENCES_MP = 4.0
+SOFT_WITH_REFERENCES: frozenset[str] = frozenset({"minimax-h3-image-create-v1"})
+
+
 def size_limit(target_id: str) -> dict[str, Any] | None:
-    """The ``run.size`` block of a capped target, or None."""
+    """The ``run.size`` block of a capped target (or one with a size fact), or None."""
     limit = SIDE_LIMIT_PX.get(target_id)
-    return {"max_side_px": limit} if limit else None
+    block: dict[str, Any] = {"max_side_px": limit} if limit else {}
+    if target_id in SOFT_WITH_REFERENCES:
+        block["soft_above_mp_with_references"] = SOFT_WITH_REFERENCES_MP
+    return block or None
 
 
 def capped_controls(target_id: str, controls: Any, size_of: Any) -> Any:
@@ -263,5 +275,5 @@ def capped_controls(target_id: str, controls: Any, size_of: Any) -> Any:
 
 
 __all__ = ["BATCH_MAX", "BATCH_MIN", "FAMILY_LABELS", "LORA_ALSO", "LORA_EVIDENCE", "LORA_MAX", "LORA_NODE_BASE", "LORA_ROOTS", "ROLES",
-           "RunError", "SIDE_LIMIT_PX", "UNSUPPORTED", "admit_loras", "apply_loras", "capped_controls", "check_batch", "compile_request",
+           "RunError", "SIDE_LIMIT_PX", "SOFT_WITH_REFERENCES", "SOFT_WITH_REFERENCES_MP", "UNSUPPORTED", "admit_loras", "apply_loras", "capped_controls", "check_batch", "compile_request",
            "lora_health", "lora_support", "member_controls", "normalize_loras", "run_descriptor", "size_limit", "strip"]

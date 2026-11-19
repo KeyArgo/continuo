@@ -19,6 +19,11 @@ import json
 import os
 import subprocess
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_speech_win_io", Path(__file__).resolve().parents[1] / "studio_core" / "win_io.py")
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any
 
 # One minimal environment for every child process (lane w39-env): dashboard/engine_process, loaded by path.
@@ -183,7 +188,7 @@ def regions_ms(path: str | Path, *, ffmpeg: str | Path, cache_dir: Path | None =
     cache = cache_dir / f"{sha}.json" if cache_dir is not None else None
     if cache is not None and cache.is_file():
         try:
-            record = json.loads(cache.read_text(encoding="utf-8"))
+            record = json.loads(_win_io.read_text(cache, encoding="utf-8"))
             if record.get("detector") == DETECTOR and record.get("sha256") == sha and isinstance(record.get("regions"), list):
                 return {**record, "cached": True}
         except (OSError, ValueError):
@@ -194,5 +199,5 @@ def regions_ms(path: str | Path, *, ffmpeg: str | Path, cache_dir: Path | None =
         cache.parent.mkdir(parents=True, exist_ok=True)
         tmp = cache.with_suffix(".tmp")
         tmp.write_text(json.dumps(record), encoding="utf-8")
-        os.replace(tmp, cache)
+        _win_io.replace(tmp, cache)
     return {**record, "cached": False}

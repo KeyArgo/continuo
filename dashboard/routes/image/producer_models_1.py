@@ -118,6 +118,9 @@ class ImageProducerSubmitRequest(_ProjectRequest):
     revision_id: str | None = Field(default=None, pattern=r"^imgrev_[0-9a-f]{32}$")
     # Lane w6-link: the Script shot this run makes a frame for ("+ Frame"); recorded in the job's recipe.
     shot_id: str | None = Field(default=None, pattern=r"^sh-[0-9a-f]{8}$", min_length=11, max_length=11)
+    # w45-s7 item 1 (HER-101): the bridge action this submit runs (a Vary cell); the author is decided by the backend's
+    # grant for that action (job_authors_1._bridge_job_note), never by this field alone.
+    bridge_action_id: str | None = Field(default=None, pattern=r"^act_[0-9a-f]{32}$", min_length=36, max_length=36)
 
     @model_validator(mode="after")
     def _basis_is_whole_or_absent(self) -> "ImageProducerSubmitRequest":

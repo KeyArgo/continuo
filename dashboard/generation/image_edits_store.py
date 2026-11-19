@@ -30,6 +30,11 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_image_edits_store_win_io", Path(__file__).resolve().parents[1] / "studio_core" / "win_io.py")
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any
 
 SCHEMA = "studio.image-edits/1"
@@ -167,8 +172,7 @@ def read_one(folder: Path | None, scope: str, sha256: str) -> dict[str, Any] | N
     if info.st_size > PICTURE_MAX_BYTES:
         raise ImageEditsError("image_edits_damaged", "The edits of this picture are damaged.")
     try:
-        with open(target, "rb") as handle:
-            raw = handle.read(PICTURE_MAX_BYTES + 1)
+        raw = _win_io.read_bytes(target, PICTURE_MAX_BYTES + 1)
     except OSError as exc:
         raise ImageEditsError("image_edits_unavailable", "The edits could not be read.") from exc
     if len(raw) > PICTURE_MAX_BYTES:
@@ -252,7 +256,7 @@ def write_one(folder: Path, scope: str, sha256: str, expected_revision: int, dev
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, target)
+        _win_io.replace(temporary, target)
         _fsync_dir(folder)
     except OSError as exc:
         raise ImageEditsError("image_edits_unavailable", "The edits could not be saved.") from exc

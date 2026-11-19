@@ -186,7 +186,7 @@ async def image_producer_lora_info(request: ImageLoraInfoRequest) -> Any:
     """One LoRA's detail; fetch=true asks Civitai once by the file's SHA256."""
     name = request.name
     if not _lora_library_module.name_ok(name) or not await _image_lora_allowed(name):
-        return _edit_error(404, "lora_unknown", "The image engine does not list this LoRA")
+        return _edit_error(404, "lora_unknown", f"The image engine does not list the LoRA {name}")  # w45-s4 item 6
     library = _image_lora_library()
     root = _image_lora_root()
     path = _image_lora_path(root, name)
@@ -241,5 +241,5 @@ async def _image_lora_admit(spec: Any) -> JSONResponse | None:
         return _edit_engine_unreachable()
     for name in custom:
         if type(name) is not str or name not in names:
-            return _edit_error(422, "lora_unknown", "The image engine does not list this LoRA")
+            return _edit_error(422, "lora_unknown", f"The image engine does not list the LoRA {name}")  # w45-s4 item 6
     return None

@@ -217,7 +217,7 @@ async def media_peaks(request: MediaPeaksRequest) -> dict[str, Any]:
         return await asyncio.to_thread(_media_peaks_of, path, request.buckets)
     except (RecipeError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
         if isinstance(exc, _FolderNotApproved):
-            return _folder_refusal()
+            return _folder_refusal(exc)
         message = str(exc) if isinstance(exc, RecipeError) else "The sound could not be read."
         return {"error": f"Media peaks failed: {message}"}
     except Exception:  # noqa: BLE001 - finite plugin boundary (decode errors are ProjectError)

@@ -35,7 +35,10 @@ def build_snapshot(request, owned_references, basis, policy):
     desc = entry["descriptor"]
     values = {control["id"]: copy.deepcopy(request["controls"].get(control["id"], control["default"])) for control in desc["controls"]}
     if set(request["controls"]) - set(values):
-        raise c.ContractError("controls-not-offered")
+        # w45-s1 item 3: the refusal names the controls this target offers.
+        error = c.ContractError("controls-not-offered")
+        error.control, error.accepted = "controls", sorted(values)
+        raise error
     effective = {"schema": desc["request_schema"], "target_id": target, "prompt": request["prompt"], "controls": values,
                  "references": [{"image": "filmsuite-ref-" + ref["sha256"][:32] + ".png [temp]", "role": ref["role"]} for ref in owned_references]}
     if "loras" in request:

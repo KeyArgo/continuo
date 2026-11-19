@@ -111,7 +111,7 @@ def _voice_error(exc: BaseException) -> JSONResponse:
     if isinstance(exc, studio_core.ProjectError):
         return JSONResponse(status_code=404 if exc.code == "project_not_found" else 503,
                             content={"error": {"code": exc.code, "message": "The project could not be read"}})
-    return JSONResponse(status_code=503, content={"error": {"code": "voice_unavailable", "message": "Voice is unavailable"}})
+    return _audio_route_fault("voice", exc)
 
 
 def _voice_project(reference: ProjectReference) -> tuple[str, str, list[str]]:
@@ -184,7 +184,7 @@ def _voice_copy_in(source: Path, folder: Path) -> tuple[Path, str]:
     if not target.exists():
         temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
         temporary.write_bytes(data)
-        os.replace(temporary, target)
+        _win_io.replace(temporary, target)
     return target, digest
 
 
@@ -236,13 +236,27 @@ async def voice_import(request: VoiceImportRequest):
         return _voice_error(exc)
 
 
+def _voice_read_roots(reference: ProjectReference) -> list[str]:
+    """Lane w45-s6 item 1: the folders this project may read, from the one server list (_request_roots with the project:
+    its approved folders plus its own media/ and output/, revoked folders left out), as the image import reads them.
+    /voice/import puts a clip into <project>/media/Voice/References when no folder is approved; it is read from there."""
+    return list(_request_roots([], reference, server_list=True))
+
+
 def _voice_clip_file(project_id: str, roots: list[str], clip: Mapping[str, Any]) -> Path:
-    path, _facts = _timeline_audio_index(project_id).locate(clip["ref"], roots)
+    try:
+        path, _facts = _timeline_audio_index(project_id).locate(clip["ref"], roots)
+    except _timeline_module("footage").FootageError as exc:
+        # Lane w45-s6 item 2: the clip's own name and the index's fact (outside_roots, file_missing, changed, ...).
+        fact = str(exc).rstrip(".")
+        raise _voice_store_module.VoiceStoreError(exc.code, f"The voice clip {clip.get('name') or 'of this voice'} cannot be read: "
+                                                            f"{fact[:1].lower()}{fact[1:]}") from None
     return Path(path)
 
 
 def _voice_transcribe(request: VoiceTranscribeRequest) -> dict[str, Any]:
-    _directory, project_id, roots = _voice_project(request.project_ref)
+    _directory, project_id, _roots = _voice_project(request.project_ref)
+    roots = _voice_read_roots(request.project_ref)
     state = _voice_store_module.read(_voice_state_dir(), project_id)
     voice = next((v for v in state["voices"] if v["id"] == request.voice_id), None)
     if voice is None or voice["clip"] is None:
@@ -362,7 +376,8 @@ def _voice_plan(request: VoiceGenerateRequest) -> dict[str, Any]:
     clip_wav = None
     if voice["source"] == "clip":
         clip = voice["clip"]
-        clip_wav = _voice_runner_module.cut_clip(_voice_clip_file(project_id, roots, clip), clip["in"], clip["out"], FFMPEG_PATH, _voice_state_dir() / "scratch")
+        clip_wav = _voice_runner_module.cut_clip(_voice_clip_file(project_id, _voice_read_roots(request.project_ref), clip), clip["in"], clip["out"],
+                                                 FFMPEG_PATH, _voice_state_dir() / "scratch")
     seed_control = next((c for c in manifest["controls"] if c["id"] == "seed"), None)
     base_seed = request.values.get("seed", voice["seed"] if voice["seed"] is not None else (seed_control or {}).get("default", 1))
     seeds = list(request.seeds) if request.seeds else [int(base_seed) + n for n in range(request.count)]
@@ -398,10 +413,23 @@ def _voice_run_one(item: dict[str, Any]) -> None:
         save_to=str(folder / name), approved_roots=[str(folder)], project_id=plan["project_id"])
     facts: dict[str, Any] = {"target_id": manifest["id"], "seed": seed, "warnings": plan["warnings"]}
     try:
+        # Lane w45-s6 item 3: this process owns the row before it exists; rows of a dead process close first.
+        _take_admit(store, _VOICE_CONNECTION, item["client_request_id"])
         record = store.create_or_get_job(generation_request, connection_id=_VOICE_CONNECTION, frozen_destination=str(folder), requested_basename=name)
-    except Exception:  # noqa: BLE001 - no row: the take is reported failed in the plan
-        item["error"] = "The take could not be started"
+        _job_authors_note([record.studio_job_id], item.get("by") or "artist")  # w45-s10 item 4: Jobs and Media read it
+    except Exception as exc:  # noqa: BLE001 - no row: the take is listed failed by its request id (w45-s8)
+        _take_release(store, item["client_request_id"])
+        _take_start_failed(_VOICE_FAILED, _VOICE_QUEUE_LOCK, item, exc)
         return
+    try:
+        _voice_run_started(item, plan, record, store, folder, name, args, facts, manifest, line, voice, seed)
+    finally:
+        _take_release(store, item["client_request_id"])
+
+
+def _voice_run_started(item: dict[str, Any], plan: dict[str, Any], record: Any, store: Any, folder: Path, name: str,
+                       args: dict[str, Any], facts: dict[str, Any], manifest: Mapping[str, Any], line: Mapping[str, Any],
+                       voice: Mapping[str, Any], seed: int) -> None:
     item["studio_job_id"] = record.studio_job_id
 
     def register(body: dict[str, Any]) -> None:
@@ -437,27 +465,18 @@ def _voice_run_one(item: dict[str, Any]) -> None:
         pass
 
 
+# Lane w45-s8 item 3: the worker flag and the failed starts (generation/take_owners_1.py _take_worker).
+_VOICE_WORKER: dict[str, bool] = {"active": False}
+_VOICE_FAILED: dict[str, dict[str, Any]] = {}
+
+
 def _voice_worker() -> None:
-    while True:
-        with _VOICE_QUEUE_LOCK:
-            item = next((entry for entry in _VOICE_QUEUE if entry["state"] == "waiting"), None)
-            if item is None:
-                return
-            item["state"] = "started"
-        try:
-            _voice_run_one(item)
-        finally:
-            with _VOICE_QUEUE_LOCK:
-                _VOICE_QUEUE.remove(item)
+    _take_worker(_VOICE_QUEUE, _VOICE_QUEUE_LOCK, _VOICE_WORKER, _voice_run_one, lambda item, exc: (
+        _take_start_failed(_VOICE_FAILED, _VOICE_QUEUE_LOCK, item, exc) if item.get("studio_job_id") is None else None))
 
 
 def _voice_wake_worker() -> None:
-    with _VOICE_QUEUE_LOCK:
-        if any(t.is_alive() for t in _VOICE_THREADS):
-            return
-        thread = threading.Thread(target=_voice_worker, name="fs-voice-takes", daemon=True)
-        _VOICE_THREADS[:] = [thread]
-        thread.start()
+    _take_wake(_VOICE_QUEUE_LOCK, _VOICE_WORKER, _VOICE_THREADS, _voice_worker, "fs-voice-takes")
 
 
 _VOICE_REQUESTS_LOCK = threading.Lock()
@@ -470,7 +489,7 @@ def _voice_requests_path(project_id: str) -> Path:
 
 def _voice_requests_read(project_id: str) -> dict[str, Any]:
     try:
-        body = json.loads(_voice_requests_path(project_id).read_text(encoding="utf-8"))
+        body = json.loads(_win_io.read_text(_voice_requests_path(project_id), encoding="utf-8"))
     except FileNotFoundError:
         return {}
     if not isinstance(body, dict) or body.get("schema") != "studio.voice-requests/1" or not isinstance(body.get("requests"), dict):
@@ -484,7 +503,7 @@ def _voice_requests_write(project_id: str, requests: dict[str, Any]) -> None:
     temporary = folder / f".{project_id}.{uuid.uuid4().hex}.tmp"
     kept = dict(sorted(requests.items(), key=lambda kv: kv[1].get("at", 0))[-_VOICE_REQUESTS_KEEP:])
     temporary.write_text(json.dumps({"schema": "studio.voice-requests/1", "requests": kept}, ensure_ascii=False, sort_keys=True), encoding="utf-8")
-    os.replace(temporary, _voice_requests_path(project_id))
+    _win_io.replace(temporary, _voice_requests_path(project_id))
 
 
 def _voice_request_digest(request: VoiceGenerateRequest) -> str:
@@ -524,8 +543,11 @@ def _voice_generate_batch(request: VoiceGenerateRequest, receipt: Any = None) ->
     planned = []
     items = []
     for seed in plan["seeds"]:
+        # w45-s10 item 4: the take's author is the caller of this request (agent_tools sets it for a Hermes tool call; the
+        # body's ``by`` is never trusted), read here because the take runs later on the worker thread.
         items.append({"plan": plan, "seed": seed, "state": "waiting", "batch": batch, "client_request_id": f"voice-{uuid.uuid4().hex}",
-                      "line_id": plan["line"]["id"], "project_id": plan["project_id"], "target_id": plan["target"]["manifest"]["id"], "studio_job_id": None})
+                      "line_id": plan["line"]["id"], "project_id": plan["project_id"], "target_id": plan["target"]["manifest"]["id"], "studio_job_id": None,
+                      "by": _film_caller()})
         planned.append({"seed": seed, "request_id": items[-1]["client_request_id"]})
     answer = {"line_id": plan["line"]["id"], "target_id": plan["target"]["manifest"]["id"], "batch": batch, "planned": planned,
               "warnings": plan["warnings"]}
@@ -575,8 +597,9 @@ async def voice_generate(request: VoiceGenerateRequest):
 
 def _voice_takes(request: VoiceTakesRequest) -> dict[str, Any]:
     _directory, project_id, _roots = _voice_project(request.project_ref)
-    state = _voice_store_module.read(_voice_state_dir(), project_id)
     store = _comfy_store()
+    _take_settle(store, _VOICE_CONNECTION)  # lane w45-s6 item 3: a row of a dead process reads interrupted, not running
+    state = _voice_store_module.read(_voice_state_dir(), project_id)
     marks = _media_marks_read(f"film_owner:{project_id}").get("items") or {}
     out = []
     for job_id, take in state["takes"].items():
@@ -584,9 +607,9 @@ def _voice_takes(request: VoiceTakesRequest) -> dict[str, Any]:
             continue
         try:
             record = store.get_job(job_id)
-            raw, created = record.state, record.created_at
+            raw, created, reason = record.state, record.created_at, record.reason_code
         except Exception:  # noqa: BLE001 - a missing row reads as failed
-            raw, created = "failed", None
+            raw, created, reason = "failed", None, None
         mark = marks.get(job_id) or {}
         facts = take["facts"]
         shown = {"ready": "ready", "failed": "failed", "running": "running"}.get(raw, "waiting")
@@ -594,21 +617,29 @@ def _voice_takes(request: VoiceTakesRequest) -> dict[str, Any]:
         # the take still reads running at 100 % (never "ready" with no length or loudness).
         if shown == "ready" and facts.get("state") != "ready":
             shown = "failed" if facts.get("state") == "failed" else "running"
+        interrupted = raw == "failed" and reason == "job_lost" and facts.get("state") != "failed"
         out.append({"studio_job_id": job_id, "line_id": take["line_id"], "state": shown,
+                    "code": "take_interrupted" if interrupted else None,
                     "progress": 1.0 if shown == "running" and raw == "ready" else _VOICE_PROGRESS.get(job_id), "selected": take["selected"], "gain_db": take["gain_db"],
                     "kept": bool(mark.get("kept")), "rating": int(mark.get("rating") or 0), "target_id": facts.get("target_id"),
                     "seed": facts.get("seed"), "seconds": facts.get("seconds"), "loudness": facts.get("loudness") or {},
-                    "took_seconds": facts.get("took_seconds"), "warnings": facts.get("warnings") or [], "error": facts.get("error"),
+                    "took_seconds": facts.get("took_seconds"), "warnings": facts.get("warnings") or [],
+                    "error": _TAKE_INTERRUPTED if interrupted else facts.get("error"),
                     "created_at": _finite_epoch(created), "words": facts.get("words") or None, "source": facts.get("source") or "engine",
                     "recut_of": facts.get("recut_of"), "pauses": facts.get("pauses")})
     out.sort(key=lambda item: item["created_at"] or 0)
     with _VOICE_QUEUE_LOCK:
         waiting = [entry for entry in _VOICE_QUEUE if entry["project_id"] == project_id and entry["studio_job_id"] is None
                    and (not request.line_id or entry["line_id"] == request.line_id)]
-        for entry in waiting:
-            out.append({"studio_job_id": None, "request_id": entry["client_request_id"], "line_id": entry["line_id"], "state": "waiting",
+        failed = [entry for entry in _VOICE_FAILED.values() if entry["project_id"] == project_id  # w45-s8: never started
+                  and (not request.line_id or entry["line_id"] == request.line_id)]
+        for entry in [*waiting, *failed]:
+            no_start = entry["state"] == "failed"
+            out.append({"studio_job_id": None, "request_id": entry["client_request_id"], "line_id": entry["line_id"],
+                        "state": "failed" if no_start else "waiting", "code": "take_not_started" if no_start else None,
                         "progress": None, "selected": False, "gain_db": 0.0, "kept": False, "rating": 0, "target_id": entry["target_id"],
-                        "seed": entry["seed"], "seconds": None, "loudness": {}, "took_seconds": None, "warnings": [], "error": None,
+                        "seed": entry["seed"], "seconds": None, "loudness": {}, "took_seconds": None, "warnings": [],
+                        "error": entry["error"] if no_start else None,
                         "created_at": None, "words": None, "source": "engine", "recut_of": None, "pauses": None})
     return {"takes": out, "revision": state["revision"]}
 

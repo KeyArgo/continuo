@@ -50,8 +50,8 @@ async def h3_sound_check(request: H3SoundCheckRequest) -> dict[str, Any]:
         return _v4_error("invalid_request")
     try:
         roots = _request_roots(request.approved_roots, request.project_ref)
-    except _FolderNotApproved:
-        return _folder_refusal()
+    except _FolderNotApproved as exc:
+        return _folder_refusal(exc)
     extra = set(request.args) - _H3_SOUND_KEYS
     if extra:
         return {"error": "Only the sound fields and duration_seconds are read here", "reason_code": "invalid_request"}

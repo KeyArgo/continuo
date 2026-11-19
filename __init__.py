@@ -95,7 +95,12 @@ _LOCAL_PATH_SPEC.loader.exec_module(_LOCAL_PATH)
 
 
 class _FolderRefused(Exception):
-    """Lane w21-rel (AUD-144): the file is outside the folders the artist approved."""
+    """Lane w21-rel (AUD-144): the file is outside the folders the artist approved.
+    w45-s10 item 3: carries the route's refusal (folder, scope) so the tool answers the same named shape."""
+
+    def __init__(self, cause: Any = None) -> None:
+        super().__init__("Folder not approved.")
+        self.cause = cause
 
 
 _ROUTE_TOOLS_MODULE: Any = None
@@ -133,14 +138,15 @@ def _approved_source(args: dict[str, Any]) -> Path:
     try:
         allowed = api._request_roots(roots, project_ref, path=str(args.get("path")), server_list=True)
         return Path(api._confined_music_path(str(args.get("path")), allowed))
-    except api._FolderNotApproved:
-        raise _FolderRefused() from None
+    except api._FolderNotApproved as exc:
+        raise _FolderRefused(exc) from None
     finally:
         api._FILM_CALLER.reset(token)
 
 
-def _folder_refusal() -> str:
-    return _result(_route_api()._folder_refusal())
+def _folder_refusal(exc: Any = None) -> str:
+    # The route's refusal when there is one (folder, scope); a network / device path refused on its text names none.
+    return _result(_route_api()._folder_refusal(getattr(exc, "cause", None)))
 
 
 def _analysis(raw: Any) -> tuple[Path, dict[str, Any]]:
@@ -224,8 +230,8 @@ def _handle_music_analyze(args: dict[str, Any], **_kwargs: Any) -> str:
     try:
         path, analysis = _analysis(args)
         return _result(_compact_analysis(path, analysis))
-    except _FolderRefused:
-        return _folder_refusal()
+    except _FolderRefused as exc:
+        return _folder_refusal(exc)
     except Exception as exc:  # noqa: BLE001 - tool boundary
         return _error(str(exc))
 
@@ -268,8 +274,8 @@ def _handle_music_describe(args: dict[str, Any], **_kwargs: Any) -> str:
                 ),
             }
         )
-    except _FolderRefused:
-        return _folder_refusal()
+    except _FolderRefused as exc:
+        return _folder_refusal(exc)
     except Exception as exc:  # noqa: BLE001 - tool boundary
         return _error(str(exc))
 
@@ -297,8 +303,8 @@ def _handle_music_events(args: dict[str, Any], **_kwargs: Any) -> str:
                 "truncated": len(events) > limit,
             }
         )
-    except _FolderRefused:
-        return _folder_refusal()
+    except _FolderRefused as exc:
+        return _folder_refusal(exc)
     except Exception as exc:  # noqa: BLE001 - tool boundary
         return _error(str(exc))
 
@@ -350,8 +356,8 @@ def _handle_music_spans(args: dict[str, Any], **_kwargs: Any) -> str:
                 "caution": None if supported else "No global bar claim: tempo or meter is variable, mixed, ambiguous, or absent.",
             }
         )
-    except _FolderRefused:
-        return _folder_refusal()
+    except _FolderRefused as exc:
+        return _folder_refusal(exc)
     except Exception as exc:  # noqa: BLE001 - tool boundary
         return _error(str(exc))
 
@@ -502,19 +508,58 @@ def _render_spec_choices() -> dict[str, Any]:
     }
 
 
+def _image_readiness_now() -> dict[str, Any]:
+    """w45-s1 item 2: target_id -> the one readiness answer (dashboard/generation/image_readiness.py, the same health
+    and submit give) for every catalog image target, asked of the engine running now (one /object_info per class).
+    Runs on its own thread so a tool call inside Hermes' event loop can wait for it."""
+    import asyncio
+    import threading
+
+    api = _route_api()
+    readiness = importlib.import_module(api._image_contract_module().__package__ + ".image_readiness")
+    box: dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            box["value"] = asyncio.run(readiness.catalog_readiness())
+        except BaseException as exc:  # noqa: BLE001 - handed to the caller below
+            box["error"] = exc
+
+    worker = threading.Thread(target=run, name="continuo-image-readiness", daemon=True)
+    worker.start()
+    worker.join(60)
+    if "value" in box:
+        return box["value"]
+    # Never a silent "runnable": every image target reads unavailable with the fact why readiness is unknown.
+    reason = "The image engine did not answer within 60 s" if "error" not in box else f"Image readiness could not be read: {type(box['error']).__name__}"
+    return _NotReady(reason)
+
+
+class _NotReady(dict):
+    """Readiness for every target when it could not be read at all: not ready, with one reason."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__()
+        self.reason = reason
+
+    def get(self, key: Any, default: Any = None) -> dict[str, Any]:
+        return {"target_id": key, "state": "unreachable", "ready": False, "reason": self.reason}
+
+
 def _image_model_rows() -> list[dict[str, Any]]:
     """The Image models with the picker's availability (the same projection /models/catalog answers).
 
-    ``availability`` is ``runnable`` for every wired model with its files present (a model without a
-    render record says so in ``reason``; w39-p2-open); ``unavailable`` rows (missing files, a render that
-    failed, a subscription not connected) carry the plain reason the picker shows.
+    ``availability`` is ``runnable`` when the image engine running now can take a job for the target (w45-s1 item 2:
+    image_readiness, the answer health and submit give); ``unavailable`` rows carry the reason that names what is
+    missing (a node, a file, a slot pinned versus live, the engine not answering, a failed render, a subscription not
+    connected). A render on record is a fact in ``reason`` and ``proof``, never the cause of ``runnable``.
     """
     spec = importlib.util.spec_from_file_location("film_suite_agent_model_catalog", _MODEL_CATALOG_PATH)
     if spec is None or spec.loader is None:
         return []
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    public = module.build_public_catalog(None)
+    public = module.build_public_catalog(None, readiness=_image_readiness_now())
     rows = []
     for family in public["families"]:
         if family["kind"] != "image":
@@ -529,6 +574,8 @@ def _image_model_rows() -> list[dict[str, Any]]:
                 "target_id": workflow.get("target_id") or (variant["suite_targets"] or [None])[0],
                 "operations": list(variant["operations"]), "prompt_grammar": variant["prompt_grammar"],
                 "availability": evidence["availability"], "reason": evidence.get("reason"),
+                # w45-s1 item 2: the render on record as a fact, with the engine version it was made on.
+                "proof": {k: evidence[k] for k in ("state", "date", "comfyui") if k in evidence},
                 # w1-imgout: batch bounds and LoRA support (offered / untested / unsupported with the reason).
                 **({"run": workflow["run"]} if workflow.get("run") else {}),
             })
@@ -576,7 +623,7 @@ def _handle_image_catalog(args: dict[str, Any], **_kwargs: Any) -> str:
                 f"Pick with continuo_image_action select_tile {{axis, key}}. LoRA is multi-select (max {choices.get('lora_max', 32)}); selecting a picked LoRA again removes it.",
                 "Size and batch: set_size {format, mp | width, height, batch}; sampling.size and sampling.batch are the renderer bounds.",
                 "Character has no None tile; clear_axis on character is rejected.",
-                "models: availability runnable = in the picker and usable (reason says whether a render through the Suite is on record; no record is no reason to avoid it); unavailable models are not in the picker (reason says why: missing files, a failed render, not connected); declared = described in the catalog with no Suite workflow, never submit it.",
+                "models: availability runnable = in the picker and the image engine running now can take a job for it (the same answer continuo_target_health and submit give); proof is the render on record with its ComfyUI version, a fact only (no record is no reason to avoid it); unavailable models are not in the picker (reason names what is missing: a node, a file, a slot pinned versus live, the engine not answering, a failed render, not connected); declared = described in the catalog with no Suite workflow, never submit it.",
                 "models[].run (catalog targets): batch {min, max} for continuo_image_workflow_submit batch (seed + index per picture); loras.available with loras [{file, strength, role?}] from that model's family, else loras.reason says why it is refused.",
                 "Options with written_for_nous_girl=true use she/her and hair wording; the pane warns when another character is picked.",
             ],
@@ -689,6 +736,134 @@ def _note_hermes_image_jobs(action: str, applied: Any) -> None:
         pass
 
 
+# Lane w45-s7 item 1 (HER-101): the pane acks a Vary when cell 1 is accepted and submits cells 2..N later, so the ack
+# cannot name them. When this tool hands a ``vary`` action to the pane it records a grant in the same job-authors table:
+# the action id, one cell per value, an hour to run (4 cells at the pane's longest follow of 5 min each fit). The pane
+# sends that action id with each cell's submit; the submit route notes the cell as Hermes' against the grant only
+# (job_authors_1._bridge_job_note). Only this tool writes grants, so a page submit cannot claim Hermes by itself.
+# Lane w45-s9 item 1: the same grant for every bridge action whose jobs the pane submits after its ack (the ack names
+# none): an agent's edit (generate_edit, outpaint_edit, run_edit_boxes, regenerate_layer: one job per variant) and a
+# palette Generate (run_command generate: one run, whose members read their head's author, job_authors_1 job_runs).
+_VARY_GRANT_SECONDS = 3600.0
+_EDIT_VARIANTS_MAX = 4  # the pane's most variants of one edit (layers.js LAYER_VARIANTS_MAX, image_bridge payload 1-4)
+
+
+def _grant_binding(action: str, payload: Any, state: Any) -> dict[str, Any]:
+    """w45-s20 item 1: what a grant is bound to besides its jobs: the owner the action was sent against, the route kind
+    its jobs come through and how many operations it may make (a Vary: one submit per value; an edit action: one edit;
+    a palette Generate: one submit)."""
+    owner = state.get("owner_scope") if isinstance(state, dict) and type(state.get("owner_scope")) is str else None
+    if action == "vary":
+        values = payload.get("values") if isinstance(payload, dict) else None
+        return {"owner_scope": owner, "kind": "submit", "ops": len(values or ())}
+    if action == "run_command":
+        return {"owner_scope": owner, "kind": "submit", "ops": 1}
+    return {"owner_scope": owner, "kind": "edit", "ops": 1}
+
+
+def _granted_jobs(action: str, payload: Any, state: Any) -> int:
+    """How many jobs a bridge action may make after its ack (0 = none, no grant). From the payload; what the payload
+    leaves to the pane is read from the state the tool sent the action against, else the pane's maximum."""
+    payload = payload if isinstance(payload, dict) else {}
+    state = state if isinstance(state, dict) else {}
+
+    def count(value: Any) -> int | None:
+        return value if type(value) is int and 1 <= value <= _EDIT_VARIANTS_MAX else None
+    if action == "vary":
+        return len(payload.get("values") or ())
+    if action in ("generate_edit", "outpaint_edit"):
+        return count(payload.get("variants")) or _EDIT_VARIANTS_MAX
+    if action == "run_edit_boxes":
+        boxes = (state.get("edit") or {}).get("boxes") if isinstance(state.get("edit"), dict) else None
+        return count(payload.get("variants")) or count((boxes or {}).get("variants") if isinstance(boxes, dict) else None) or _EDIT_VARIANTS_MAX
+    if action == "regenerate_layer":
+        generative = ((state.get("develop") or {}).get("generative") or {}) if isinstance(state.get("develop"), dict) else {}
+        layers = generative.get("layers") if isinstance(generative, dict) else None
+        layer = next((l for l in layers or () if isinstance(l, dict) and l.get("id") == payload.get("layer")), None)
+        return count((layer or {}).get("variants")) or _EDIT_VARIANTS_MAX
+    if action == "run_command" and payload.get("id") == "generate":
+        return 1
+    return 0
+
+
+def _grant_hermes_jobs(action_id: str, cells: int, *, revoke: bool = False, binding: dict[str, Any] | None = None,
+                       operation_ids: list[str] | None = None) -> bool:
+    """Write (or revoke) one grant; True when it is durably written. w45-s20 item 2: a failed write is the caller's to
+    answer (an action whose jobs would silently stay the artist's is not sent). w47-q4 item 1: with ``operation_ids``
+    the grant is exact: those ids (bound to its kind and owner) are written in the same transaction, and only a submit
+    with one of them is Hermes' (job_authors_1._bridge_job_note)."""
+    try:
+        import sqlite3
+        base = _local_data.records_base()
+        path = Path(state_root(Path(base) / "hermes")) / "job-authors.sqlite3"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(str(path), timeout=5)
+        try:
+            with connection:
+                connection.execute("CREATE TABLE IF NOT EXISTS vary_grants (action_id TEXT PRIMARY KEY, cells INTEGER NOT NULL, expires REAL NOT NULL)")
+                have = {row[1] for row in connection.execute("PRAGMA table_info(vary_grants)")}
+                for column, kind in (("owner_scope", "TEXT"), ("kind", "TEXT"), ("ops", "INTEGER"), ("exact", "INTEGER")):
+                    if column not in have:  # w45-s20 item 1, w47-q4 item 1 (exact): the same columns job_authors_1 adds
+                        connection.execute(f"ALTER TABLE vary_grants ADD COLUMN {column} {kind}")
+                connection.execute("CREATE TABLE IF NOT EXISTS vary_grant_ops (op_key TEXT PRIMARY KEY, action_id TEXT NOT NULL)")
+                now = time.time()
+                connection.execute("DELETE FROM vary_grants WHERE expires <= ?", (now,))
+                if revoke:
+                    connection.execute("DELETE FROM vary_grants WHERE action_id = ?", (action_id,))
+                    connection.execute("DELETE FROM vary_grant_ops WHERE action_id = ?", (action_id,))  # w47-q4: its ids go with it
+                else:
+                    bound = binding or {}  # w45-s20 item 1: no binding given binds to nothing (kind "none")
+                    ids = list(operation_ids or ())
+                    connection.execute("INSERT OR REPLACE INTO vary_grants (action_id, cells, expires, owner_scope, kind, ops, exact) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                                       (action_id, int(cells), now + _VARY_GRANT_SECONDS, bound.get("owner_scope") or "",
+                                        bound.get("kind") or "none", len(ids) if ids else int(bound.get("ops") or 0), 1 if ids else None))
+                    connection.executemany("INSERT INTO vary_grant_ops (op_key, action_id) VALUES (?, ?)",
+                                           [(f"{bound.get('kind') or 'none'}|{bound.get('owner_scope') or ''}|{op}", action_id) for op in ids])
+        finally:
+            connection.close()
+        return True
+    except Exception:  # noqa: BLE001 - answered by the caller (_enqueue_image_action), never raised into the tool
+        return False
+
+
+def _new_image_operation_id() -> str:
+    """An image operation id like the pane's own (imgop_ + 32 hex; edit_1/producer_models_1 operation_id)."""
+    import secrets
+    return "imgop_" + secrets.token_hex(16)
+
+
+class _GrantUnwritten(Exception):
+    """w45-s20 item 2: the Hermes author grant of an action could not be written; the action was not sent."""
+
+
+def _enqueue_image_action(store: Any, window_id: str, action: str, payload: Any, state: Any = None, **kwargs: Any) -> dict[str, Any]:
+    """w45-s20 item 2: the grant is durably written under the action's id BEFORE the action becomes visible to the pane
+    (a pane polling at once finds it); no grant written, no action sent; a failed enqueue revokes the grant."""
+    canonical = image_bridge.validate_action_payload(action, payload)
+    jobs = _granted_jobs(action, canonical, state)
+    if jobs <= 0:
+        return store.enqueue_action(window_id, action, payload, **kwargs)
+    action_id = image_bridge.new_action_id()
+    binding = _grant_binding(action, canonical, state)
+    # w47-q4 item 1: one operation id per operation the action may make, allocated here and stored with the grant
+    # before the action is visible; the action carries them, the pane submits exactly these.
+    operation_ids = [_new_image_operation_id() for _ in range(max(1, int(binding.get("ops") or 0)))]
+    if not _grant_hermes_jobs(action_id, jobs, binding=binding, operation_ids=operation_ids):
+        raise _GrantUnwritten(action_id)
+    try:
+        return store.enqueue_action(window_id, action, payload, action_id=action_id, operation_ids=operation_ids, **kwargs)
+    except BaseException:
+        _grant_hermes_jobs(action_id, 0, revoke=True)
+        raise
+
+
+def _grant_unwritten_result(action: str, window_id: str) -> Any:
+    return _result({"ok": False, "status": "refused", "action": action, "window_id": window_id,
+                    "reason_code": "image_author_grant_unwritten",
+                    "message": "Continuo could not note this action as Hermes' work, so it was not sent. Try again.",
+                    "hint": "The job-authors record under the Hermes state folder could not be written."})
+
+
 def _handle_image_action(args: dict[str, Any], **_kwargs: Any) -> Any:
     try:
         store = _image_bridge_store()
@@ -708,13 +883,18 @@ def _handle_image_action(args: dict[str, Any], **_kwargs: Any) -> Any:
         resend = expected_revision is None
         if expected_revision is None:
             expected_revision = target["revision"]
-        record = store.enqueue_action(
-            target["window_id"],
-            action,
-            payload,
-            expected_revision=expected_revision,
-            context_key=target["state"]["context_key"],
-        )
+        try:
+            record = _enqueue_image_action(
+                store,
+                target["window_id"],
+                action,
+                payload,
+                target["state"],
+                expected_revision=expected_revision,
+                context_key=target["state"]["context_key"],
+            )
+        except _GrantUnwritten:
+            return _grant_unwritten_result(action, target["window_id"])
         film_events.bridge_action("image", target["window_id"], record["action_id"])
         wait = 30.0 if action in image_bridge.SLOW_ACTIONS else 4.0
         deadline = time.monotonic() + wait
@@ -728,8 +908,12 @@ def _handle_image_action(args: dict[str, Any], **_kwargs: Any) -> Any:
                     newer = rows[0]["revision"] if rows and rows[0]["revision"] > expected_revision else None
                 if newer is not None and rows and rows[0]["state"]["context_key"] == target["state"]["context_key"]:
                     expected_revision = newer
-                    record = store.enqueue_action(target["window_id"], action, payload, expected_revision=newer,
-                                                  context_key=target["state"]["context_key"])
+                    _grant_hermes_jobs(record["action_id"], 0, revoke=True)
+                    try:
+                        record = _enqueue_image_action(store, target["window_id"], action, payload, rows[0]["state"], expected_revision=newer,
+                                                      context_key=target["state"]["context_key"])
+                    except _GrantUnwritten:
+                        return _grant_unwritten_result(action, target["window_id"])
                     film_events.bridge_action("image", target["window_id"], record["action_id"])
                     deadline = time.monotonic() + wait
                     continue
@@ -738,6 +922,8 @@ def _handle_image_action(args: dict[str, Any], **_kwargs: Any) -> Any:
                     return _view_result(store, target["window_id"], record["action_id"], ack)
                 if ack["ok"]:
                     _note_hermes_image_jobs(action, ack.get("applied"))
+                elif _granted_jobs(action, payload, target["state"]) > 0:
+                    _grant_hermes_jobs(record["action_id"], 0, revoke=True)  # a refused action submits nothing
                 return _result({
                     "ok": bool(ack["ok"]),
                     "status": "acknowledged",
@@ -755,6 +941,8 @@ def _handle_image_action(args: dict[str, Any], **_kwargs: Any) -> Any:
                 })
             time.sleep(0.05)
         withdrawn = store.withdraw_action(target["window_id"], record["action_id"])
+        if withdrawn and _granted_jobs(action, payload, target["state"]) > 0:
+            _grant_hermes_jobs(record["action_id"], 0, revoke=True)  # never applied: nothing to grant
         return _result({
             "ok": False,
             "status": "withdrawn" if withdrawn else "pending",
@@ -999,7 +1187,9 @@ _IMAGE_TOOLS = (
         "continuo_image_catalog",
         "List the Image builder options (axis, key, label, LoRA file and default strength, Nous-Girl wording flag) plus "
         "allowed samplers/schedulers, so tiles can be chosen by name, plus the Image models with the picker's availability "
-        "(runnable = wired with its files present; the reason says whether a render is on record).",
+        "(runnable = the image engine running now can take a job for it; the reason names what is missing otherwise; "
+        "proof is the render on record with its ComfyUI version). Krea 2 Turbo and Raw answer from the engine like the "
+        "workflow models.",
         {
             "axis": {"type": "string", "enum": list(image_bridge.AXES)},
             "query": {"type": "string", "maxLength": 80, "description": "Case-insensitive match on key, label or group."},
@@ -1212,6 +1402,8 @@ def register(ctx: Any) -> None:
     route_tools = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(route_tools)
     route_tools.register_route_tools(ctx)
+    # ASGITransport does not run router lifespan; registration resumes an existing line.
+    route_tools.backend_api()._vq_on_startup()
     _register_skills(ctx)
     _publish_settings_door(ctx)
 

@@ -182,7 +182,7 @@ def _control_failure(exc: BaseException) -> JSONResponse:
         status = 503 if exc.code == "comfy_down" else 422
         return _control_error(status, exc.code, str(exc))
     if isinstance(exc, _FolderNotApproved):
-        return _control_error(403, _FolderNotApproved.reason_code, str(exc))
+        return _control_error(403, _FolderNotApproved.reason_code, _folder_refusal(exc)["message"])
     if isinstance(exc, RecipeError):
         return _control_error(404 if "not in this project" in str(exc) else 422, "control_source", str(exc))
     code = getattr(exc, "code", None)

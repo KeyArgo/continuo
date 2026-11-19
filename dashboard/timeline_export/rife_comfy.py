@@ -35,6 +35,10 @@ from pathlib import Path as _EndpointPath
 _endpoint_spec = _endpoint_util.spec_from_file_location("film_suite_comfy_endpoint", _EndpointPath(__file__).resolve().parents[1] / "generation" / "comfy_endpoint.py")
 _endpoint = _endpoint_util.module_from_spec(_endpoint_spec)
 _endpoint_spec.loader.exec_module(_endpoint)
+# w47-q2: every /prompt is noted (generation/engine_idle.py, loaded by path); models are freed after Continuo goes idle.
+_idle_spec = _endpoint_util.spec_from_file_location("film_suite_engine_idle", _EndpointPath(__file__).resolve().parents[1] / "generation" / "engine_idle.py")
+_idle = _endpoint_util.module_from_spec(_idle_spec)
+_idle_spec.loader.exec_module(_idle)
 COMFY_URL = _endpoint.DEFAULT_ORIGIN  # the default; every call reads _endpoint.comfy_origin()
 NODE = "FrameInterpolate"
 MODEL_LOADER = "FrameInterpolationModelLoader"
@@ -104,7 +108,10 @@ def interpolate(ffmpeg: Path, src: Path, size: tuple[int, int], frames: int, mul
                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), env=child_env())
     _get("/queue", timeout=10)  # read the queue first; the prompt waits behind the artist's
     prompt = workflow(pngs, frames, mult, "film-suite-rife")
-    answer = _post("/prompt", {"prompt": prompt, "client_id": "film-suite-" + uuid.uuid4().hex[:12]})
+    try:
+        answer = _post("/prompt", {"prompt": prompt, "client_id": "film-suite-" + uuid.uuid4().hex[:12]})
+    finally:
+        _idle.note_engine_use()
     prompt_id = (answer or {}).get("prompt_id")
     if not prompt_id:
         raise ExportError("ai_frames_failed", f"ComfyUI refused the RIFE prompt: {json.dumps(answer)[:300]}")

@@ -220,6 +220,9 @@ def _edge_moved(item: dict[str, Any], edge: str, old_duration: int, rate: dict[s
 
 def _shift_in(item: dict[str, Any], applied: int, rate: dict[str, int]) -> None:
     """The in edge moved ``applied`` record frames later and the duration shrank by it."""
+    if item.get("frame") is not None:  # lane w47-p3: a part of a split move keeps its frames of the move
+        from .ops_frame import shift_part
+        shift_part(item, applied)
     if _retimed(item):
         item["duration_frames"] -= applied
         _edge_moved(item, "in", item["duration_frames"] + applied, rate)
@@ -296,6 +299,9 @@ def _split_item(state: dict[str, Any], timeline: dict[str, Any], track: dict[str
     right["duration_frames"] = item["duration_frames"] - offset
     item["duration_frames"] = offset
     if item["type"] == "clip":
+        if item.get("frame") is not None:  # lane w47-p3: both parts keep the original move (move.part)
+            from .ops_frame import split_frame
+            split_frame(item, right, item["duration_frames"] + right["duration_frames"])
         if _retimed(item):
             _split_retimed(item, right, item["duration_frames"] + right["duration_frames"], timeline["rate"])
         elif _moving(item):
@@ -1031,6 +1037,10 @@ from .nest import NEST_OPS, NEST_STATE_OPS  # noqa: E402  (lane w23-bins: delete
 
 OPS.update(NEST_OPS)
 
+from .ops_frame import FRAME_OPS  # noqa: E402  (lane w46-d: set_frame, per-clip framing and a move)
+
+OPS.update(FRAME_OPS)
+
 
 # --- post-pass and entry points ---------------------------------------------------------
 
@@ -1112,6 +1122,8 @@ def apply_op(state: dict[str, Any], op: Any) -> tuple[dict[str, Any], dict[str, 
     if target is not None:
         _post_pass(target, before, ctx["pending_anchors"])
         curve_guard(heads, target, op["op"])
+        from .ops_frame import fix_parts
+        fix_parts(target)  # lane w47-p3: a part that an edit pushed outside its move becomes the clip's own move
     validate_state(work)
     return work, result
 

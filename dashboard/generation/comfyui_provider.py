@@ -51,6 +51,20 @@ def _load_h3_megapixels():
 
 H3_MP = _load_h3_megapixels()
 
+
+def _load_refusal_text() -> Any:
+    """studio_core/refusal_text.py by path (lane w45-s11 item 3): the one sanitiser for caller text in a refusal."""
+    import importlib.util as _importlib_util
+    from pathlib import Path as _Path
+    path = _Path(__file__).resolve().parent.parent / "studio_core" / "refusal_text.py"
+    spec = _importlib_util.spec_from_file_location("film_suite_refusal_text_" + _Path(__file__).stem, path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_refusal_text = _load_refusal_text()
+
 STUDIO_PROMPT_SENTINEL = "__STUDIO_PROMPT__"
 
 
@@ -250,7 +264,9 @@ def compile_h3_sampling_request(*, graph: dict[str, Any], manifest: Mapping[str,
     _validate_pinned_graph(graph, manifest)
     allowed = {"prompt", "duration_seconds", "seed", "aspect_ratio", "steps", "sampler_name", "scheduler", "megapixels"}
     if set(args) != allowed:
-        raise ValueError("v2 args contain missing or unknown fields")
+        missing, unknown = sorted(allowed - set(args)), sorted(_refusal_text.one_line(key, 40) for key in set(args) - allowed)[:8]
+        raise ValueError("v2 args: " + "; ".join(([f"missing {', '.join(missing)}"] if missing else [])
+                                                + ([f"unexpected {', '.join(unknown)}"] if unknown else [])))
     prompt = args["prompt"]
     if type(prompt) is not str or not prompt.strip() or prompt == STUDIO_PROMPT_SENTINEL:
         raise ValueError("prompt must contain non-placeholder text")

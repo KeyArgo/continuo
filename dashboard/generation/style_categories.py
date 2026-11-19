@@ -19,6 +19,11 @@ import stat
 import threading
 import time
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_style_categories_win_io", Path(__file__).resolve().parents[1] / "studio_core" / "win_io.py")
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any, Iterable
 
 SCHEMA = "studio.style-categories/1"
@@ -168,8 +173,7 @@ class StyleCategoryStore:
             info = target.lstat()
             if not stat.S_ISREG(info.st_mode) or info.st_size > DOC_MAX_BYTES:
                 raise StyleCategoryError("style_categories_unavailable", "Categories are unavailable")
-            with open(target, "rb") as handle:
-                raw = handle.read(DOC_MAX_BYTES + 1)
+            raw = _win_io.read_bytes(target, DOC_MAX_BYTES + 1)
         except OSError as exc:
             raise StyleCategoryError("style_categories_unavailable", "Categories are unavailable") from exc
         try:
@@ -213,10 +217,9 @@ class StyleCategoryStore:
                     handle.write(payload)
                     handle.flush()
                     os.fsync(handle.fileno())
-                os.replace(temp, target)
-                with open(target, "rb") as handle:
-                    if handle.read(DOC_MAX_BYTES + 1) != payload:
-                        raise StyleCategoryError("style_categories_unavailable", "Categories could not be saved")
+                _win_io.replace(temp, target)
+                if _win_io.read_bytes(target, DOC_MAX_BYTES + 1) != payload:
+                    raise StyleCategoryError("style_categories_unavailable", "Categories could not be saved")
                 if os.name != "nt":
                     fd = os.open(directory, os.O_RDONLY)
                     try:

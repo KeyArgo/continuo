@@ -45,6 +45,12 @@ React and `@hermes/plugin-sdk` are provided by Hermes at run time and are not bu
 - **FilmCraft** (storytold/filmcraft), edit crate (`crates/edit/src/lib.rs`: insert, overwrite, split, delete, trim,
   roll, slip) and interchange crate (FCPXML mapping): MIT OR Apache-2.0. Ported to Python and JavaScript in
   `dashboard/timeline/ops.py`, `dashboard/timeline_export/` and `src/timeline/ops/`.
+- **ComfyUI-NKD-Klein-Tools** (Nekodificador/ComfyUI-NKD-Klein-Tools) version 1.13.2, commit
+  `a9cc507b097dcff8891a594c4eac2d54dd6ccc1a` (20 Oct 2026), `box_prompt.py` (`_px_box`, `_mention`, `_emit`: box
+  sentences, the element list, boxes on a 0..1000 grid): MIT License, Copyright (c) 2025 Nekodificador. Followed in
+  `dashboard/generation/image_box.py` (`to_grid`, `sentence`, `compile_prompt`). The project is GPL-3.0 from version
+  1.13.3 (commit `fd1dd416`, 29 Oct 2026); no code from that or a later version is included. The pinned workflow
+  `flux3-klein-box-edit-v1` calls its nodes in the user's own ComfyUI; the nodes themselves are not shipped.
 
 ## Workflow templates
 

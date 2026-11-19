@@ -23,6 +23,11 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_private_operations_win_io", Path(__file__).with_name("win_io.py"))
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any, Callable
 
 try:
@@ -496,7 +501,7 @@ class PrivateOperations:
                 handle.write(encoded)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temp, path)
+            _win_io.replace(temp, path)
             if os.name != "nt":
                 os.chmod(path, 0o600)
             _flush_parent(path.parent)
@@ -510,7 +515,7 @@ class PrivateOperations:
             info = path.lstat()
             if not stat.S_ISREG(info.st_mode) or path.is_symlink() or info.st_size > limit:
                 raise OSError
-            raw = path.read_bytes()
+            raw = _win_io.read_bytes(path)
             payload = json.loads(raw.decode("utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
             raise PrivateOperationError("private record is unavailable") from exc

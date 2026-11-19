@@ -29,6 +29,11 @@ import time
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_project_store_win_io", Path(__file__).with_name("win_io.py"))
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any, Iterable, Mapping
 
 from .path_boundary import _local_path  # lane w34-sec: the lexical UNC / device guard (local_path.py)
@@ -566,8 +571,7 @@ def _enclosing_project_id(folder: str) -> tuple[str, Any] | None:
         candidate = os.path.join(current, "project.json")
         try:
             if os.path.isfile(candidate) and os.path.getsize(candidate) <= MANIFEST_MAX_BYTES:
-                with open(candidate, "rb") as handle:
-                    data = json.loads(handle.read(MANIFEST_MAX_BYTES + 1).decode("utf-8"))
+                data = json.loads(_win_io.read_bytes(candidate, MANIFEST_MAX_BYTES + 1).decode("utf-8"))
                 return current, data.get("project_id") if isinstance(data, dict) else None
         except (OSError, ValueError, UnicodeError):
             return current, None
@@ -1454,7 +1458,7 @@ def _replace_temp(temp: Path, target: Path, *, no_replace: bool) -> None:
         # The hard link is the POSIX publication boundary.  The temp remains
         # caller-owned and is cleaned through tombstone exchange later.
     else:
-        os.replace(temp, target)
+        _win_io.replace(temp, target)
 
 
 def _members(directory: Path) -> set[str]:
@@ -4101,7 +4105,7 @@ class RecentProjectStore:
                     if not path.is_file() or path.is_symlink() or path.stat().st_size > STATE_MAX_BYTES * 8:
                         continue
                     try:
-                        data = path.read_bytes()
+                        data = _win_io.read_bytes(path)
                     except OSError:
                         continue
                     if old_id.encode("ascii") not in data:

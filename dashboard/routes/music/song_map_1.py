@@ -155,7 +155,7 @@ def _song_map_start_sync(request: SongMapStartRequest) -> dict[str, Any]:
             if job["track_sha256"] == digest and job["status"] == "running":
                 return _song_map_public(job)
         job = {"job_id": f"smap_{uuid.uuid4().hex}", "track_sha256": digest, "status": "running", "progress": 0.0,
-               "stage": "starting", "result": None, "error": None, "started": time.time()}
+               "stage": "starting", "result": None, "error": None, "started": time.time(), "by": _film_caller()}
         _SONG_MAP_JOBS[job["job_id"]] = job
         for old in sorted(_SONG_MAP_JOBS.values(), key=lambda row: row["started"])[:-_SONG_MAP_KEEP]:
             if old["status"] != "running":
@@ -168,8 +168,8 @@ def _song_map_start_sync(request: SongMapStartRequest) -> dict[str, Any]:
 async def music_song_map_start(request: SongMapStartRequest) -> dict[str, Any]:
     try:
         return await asyncio.to_thread(_song_map_start_sync, request)
-    except _FolderNotApproved:
-        return _folder_refusal()
+    except _FolderNotApproved as exc:
+        return _folder_refusal(exc)
     except Exception as exc:  # noqa: BLE001 - route boundary
         return {"ok": False, "reason_code": "song_map_refused", "message": _music_error(exc)}
 
@@ -226,7 +226,7 @@ def _song_map_words_migration(digest: str, stored: dict[str, Any] | None) -> dic
             if job["track_sha256"] == digest and job["status"] == "running":
                 return job
         job = {"job_id": f"smap_{uuid.uuid4().hex}", "track_sha256": digest, "status": "running", "progress": 0.05, "kind": "words",
-               "stage": "words", "words_key": key, "result": None, "error": None, "started": time.time()}
+               "stage": "words", "words_key": key, "result": None, "error": None, "started": time.time(), "by": _film_caller()}
         _SONG_MAP_JOBS[job["job_id"]] = job
     _thread.start_new_thread(_song_map_words_run, (job, json.loads(json.dumps(stored)), str(vocals)))
     return job
@@ -260,7 +260,7 @@ async def music_song_map_read(request: Request) -> Any:
     try:
         project_ref = MusicProjectReference(project_id=project_id) if project_id else None
         return await asyncio.to_thread(_song_map_read_sync, song, _request_roots(approved_roots, project_ref, path=song, server_list=True))
-    except _FolderNotApproved:
-        return _folder_refusal()
+    except _FolderNotApproved as exc:
+        return _folder_refusal(exc)
     except Exception as exc:  # noqa: BLE001 - route boundary
         return {"ok": False, "reason_code": "song_map_refused", "message": _music_error(exc)}

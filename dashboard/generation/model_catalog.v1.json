@@ -4029,6 +4029,295 @@
           "source": "PrunaAI/P-H3-Image-Comfy rev 44a0fb73 p-h3-image_lora_edit.json (LoRA route on our MiniMax H3 FL2VA int8)"
         }
       ]
+    },
+    {
+      "id": "minimax_h3_image",
+      "label": "MiniMax-H3-Image",
+      "kind": "image",
+      "prompt_grammar": "h3_picture_n_literal",
+      "variants": [
+        {
+          "id": "create",
+          "label": "Create",
+          "operations": [
+            "create",
+            "multi_reference"
+          ],
+          "prompt_grammar": "h3_picture_n_literal",
+          "inputs": [
+            {
+              "id": "references",
+              "kind": "image",
+              "role": "reference",
+              "min": 0,
+              "max": 9,
+              "notes": "Pictures 1-9, named <Picture N> in the prompt; with one, results turn soft above about 4 MP."
+            }
+          ],
+          "files": {
+            "diffusion_model": {
+              "folder": "diffusion_models",
+              "names": [
+                "minimax_h3_image_pruned_int8_convrot.safetensors"
+              ],
+              "required": true
+            },
+            "text_encoder": {
+              "folder": "text_encoders",
+              "names": [
+                "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+              ],
+              "required": true
+            },
+            "vae": {
+              "folder": "vae",
+              "names": [
+                "minimax_h3_image_vae_fp16.safetensors"
+              ],
+              "required": true
+            }
+          },
+          "required_classes": [
+            "UNETLoader",
+            "CLIPLoader",
+            "VAELoader",
+            "MiniMaxH3ImageConditioning",
+            "ConditioningZeroOut",
+            "CFGGuider",
+            "BasicScheduler",
+            "SplitSigmas",
+            "KSamplerSelect",
+            "SamplerLCM",
+            "RandomNoise",
+            "DisableNoise",
+            "SamplerCustomAdvanced",
+            "VAEDecode"
+          ],
+          "presets": [
+            {
+              "id": "recipe",
+              "label": "Proven recipe",
+              "values": {
+                "steps": 6,
+                "sampler": "er_sde",
+                "scheduler": "simple",
+                "cfg": 1.0,
+                "megapixels": 16.0
+              },
+              "source": "The artist's renders of 13 Nov 2026 (ComfyUI 0.45.0): 6 steps simple, 3 er_sde then 3 LCM (noise 0.95 to 0.90), CFG 1, 16 MP; model card: 6 steps, no CFG"
+            }
+          ],
+          "lora_max": null,
+          "resolution": {
+            "min_px": null,
+            "max_px": null,
+            "multiple": 32,
+            "default_megapixels": 16.0
+          },
+          "stages": [],
+          "notes": [
+            "Card sizes at 16 MP: 1:1 4096x4096, 4:3 4736x3552, 3:2 5024x3360, 16:9 5472x3072, 21:9 6272x2688 (portrait swapped); working range about 4 to 20 MP.",
+            "Above 16 MP the picture is made at 16 MP first and refined at the asked size from step 4 of 6 (the artist's 33 MP pass); the text encoder runs once."
+          ],
+          "suite_targets": [],
+          "workflow": {
+            "manifest_sha256": "86eb9e0e0ea8916b3f3e9780a8a52cf6098562f46e9025db99f57e2d9e876ecd",
+            "api_sha256": "9e3d58d2c84512aee2e353620c8b70652f12c7daa7ede272a095cb7d979d37b0",
+            "descriptor": {
+              "availability": "backend_only",
+              "capabilities": {
+                "create": true,
+                "edit": false,
+                "effective_prompt": true,
+                "multi_reference": true,
+                "native_mask": false,
+                "prompt_enhancer": false
+              },
+              "controls": [
+                {
+                  "default": 0,
+                  "id": "seed",
+                  "kind": "integer",
+                  "label": "Seed",
+                  "max": 18446744073709551615,
+                  "min": 0
+                },
+                {
+                  "default": "16:9 (Widescreen)",
+                  "id": "aspect_ratio",
+                  "kind": "select",
+                  "label": "Format",
+                  "options": [
+                    "1:1 (Square)",
+                    "2:3 (Portrait Photo)",
+                    "3:2 (Photo)",
+                    "3:4 (Portrait Standard)",
+                    "4:3 (Standard)",
+                    "9:16 (Portrait Widescreen)",
+                    "16:9 (Widescreen)",
+                    "21:9 (Ultrawide)",
+                    "2.39:1 (Scope)"
+                  ]
+                },
+                {
+                  "default": 16.0,
+                  "id": "megapixels",
+                  "kind": "number",
+                  "label": "Megapixels",
+                  "max": 33.0,
+                  "min": 1.0,
+                  "step": 0.1
+                },
+                {
+                  "default": 6,
+                  "id": "steps",
+                  "kind": "integer",
+                  "label": "Steps",
+                  "max": 50,
+                  "min": 1,
+                  "step": 1
+                },
+                {
+                  "default": 3,
+                  "id": "switch_at",
+                  "kind": "integer",
+                  "label": "Switch at",
+                  "max": 50,
+                  "min": 0,
+                  "step": 1
+                },
+                {
+                  "default": "er_sde",
+                  "id": "sampler",
+                  "kind": "select",
+                  "label": "Sampler",
+                  "options": [
+                    "euler",
+                    "euler_cfg_pp",
+                    "euler_ancestral",
+                    "euler_ancestral_cfg_pp",
+                    "heun",
+                    "heunpp2",
+                    "exp_heun_2_x0",
+                    "exp_heun_2_x0_sde",
+                    "dpm_2",
+                    "dpm_2_ancestral",
+                    "lms",
+                    "dpm_fast",
+                    "dpm_adaptive",
+                    "dpmpp_2s_ancestral",
+                    "dpmpp_2s_ancestral_cfg_pp",
+                    "dpmpp_sde",
+                    "dpmpp_sde_gpu",
+                    "dpmpp_2m",
+                    "dpmpp_2m_cfg_pp",
+                    "dpmpp_2m_sde",
+                    "dpmpp_2m_sde_gpu",
+                    "dpmpp_2m_sde_heun",
+                    "dpmpp_2m_sde_heun_gpu",
+                    "dpmpp_3m_sde",
+                    "dpmpp_3m_sde_gpu",
+                    "ddpm",
+                    "lcm",
+                    "ipndm",
+                    "ipndm_v",
+                    "deis",
+                    "cfgpp_ud10_ab",
+                    "res_multistep",
+                    "res_multistep_cfg_pp",
+                    "res_multistep_ancestral",
+                    "res_multistep_ancestral_cfg_pp",
+                    "gradient_estimation",
+                    "gradient_estimation_cfg_pp",
+                    "er_sde",
+                    "seeds_2",
+                    "seeds_3",
+                    "sa_solver",
+                    "sa_solver_pece",
+                    "ddim",
+                    "uni_pc",
+                    "uni_pc_bh2",
+                    "legacy_rk",
+                    "rk",
+                    "rk_beta",
+                    "deis_3m_ode",
+                    "deis_2m_ode",
+                    "deis_3m",
+                    "deis_2m",
+                    "res_6s_ode",
+                    "res_5s_ode",
+                    "res_3s_ode",
+                    "res_2s_ode",
+                    "res_3m_ode",
+                    "res_2m_ode",
+                    "res_6s",
+                    "res_5s",
+                    "res_3s",
+                    "res_2s",
+                    "res_3m",
+                    "res_2m"
+                  ]
+                },
+                {
+                  "default": 0.95,
+                  "id": "lcm_noise",
+                  "kind": "number",
+                  "label": "LCM noise start",
+                  "max": 2.0,
+                  "min": 0.0,
+                  "step": 0.01
+                },
+                {
+                  "default": 0.9,
+                  "id": "lcm_noise_end",
+                  "kind": "number",
+                  "label": "LCM noise end",
+                  "max": 2.0,
+                  "min": 0.0,
+                  "step": 0.01
+                },
+                {
+                  "default": 4,
+                  "id": "second_pass_start",
+                  "kind": "integer",
+                  "label": "Second pass from step",
+                  "max": 50,
+                  "min": 0,
+                  "step": 1
+                }
+              ],
+              "descriptor_version": 1,
+              "media_roles": [
+                {
+                  "id": "references",
+                  "kind": "image",
+                  "label": "References",
+                  "max": 9,
+                  "min": 0,
+                  "roles": [
+                    "identity",
+                    "outfit",
+                    "location",
+                    "style",
+                    "composition",
+                    "object",
+                    "reference"
+                  ]
+                }
+              ],
+              "output": {
+                "format": "png",
+                "kind": "image",
+                "size_policy": "explicit"
+              },
+              "reason": "MiniMax-H3-Image (official, not P-H3-Image): 6 steps, 3 er_sde then 3 LCM (noise 0.95 to 0.90), simple, CFG 1; starts at the project format at 16 MP; above 16 MP a second pass refines the 16 MP picture (from step 4 of 6), up to 33 MP; up to 9 references as <Picture N> (soft above about 4 MP); needs ComfyUI 0.45.0 or newer.",
+              "request_schema": "studio.image-workflow-request/1",
+              "target_id": "minimax-h3-image-create-v1"
+            }
+          },
+          "source": "MiniMaxAI/MiniMax-H3-Image rev 8ced6006 (Comfy-Org/MiniMax-H3-Image rev 0bb149f5 files); ComfyUI 0.45.0 MiniMaxH3ImageConditioning"
+        }
+      ]
     }
   ]
 }

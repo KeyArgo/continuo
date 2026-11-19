@@ -62,6 +62,10 @@ def _piece(item: Mapping[str, Any], head: int, length: int, rate: Fraction, nest
     piece = {k: copy.deepcopy(v) for k, v in item.items() if not k.startswith("__") and k not in ("record_start_frame", "attach")}
     piece["id"] = f"{nest_id}{SEP}{item['id']}"
     piece["duration_frames"] = length
+    from .export_range import frame_span  # lane w46-d: the piece keeps the whole clip's move
+    span = frame_span(item, head)
+    if span is not None:
+        piece["__frame_span"] = span
     if head and (item.get("source") or {}).get("kind") != "picture":  # a still ignores source_in (model._clip)
         if item.get("retime"):
             raise ExportError("nested_retime_cut", f"The nested clip starts inside the retimed clip {item.get('label') or item['id']}; "

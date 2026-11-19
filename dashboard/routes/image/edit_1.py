@@ -67,57 +67,42 @@ def _edit_error(status: int, code: str, message: str) -> JSONResponse:
     return JSONResponse(status_code=status, content={"error": {"code": code, "message": message}})
 
 
+def _edit_refusal(status: int, exc: Any) -> JSONResponse:
+    """w45-s11 item 4: an EditRequestError / BoxError as the page and the agent read it: ``message`` in the artist's words,
+    ``hint`` (when the refusal has one) the agent's guidance in the same answer."""
+    hint = getattr(exc, "hint", None)
+    return JSONResponse(status_code=status, content={"error": {"code": exc.code, "message": exc.message,
+                                                               **({"hint": hint} if isinstance(hint, str) and hint else {})}})
+
+
 def _edit_engine_unreachable() -> JSONResponse:
-    return _edit_error(503, "comfyui_unreachable", "The image engine is not running. Start it and retry.")
+    # w45-s4 item 6: the fact with the address asked (was an instruction without one)
+    return _edit_error(503, "comfyui_unreachable", _comfy_endpoint_module.engine_state(answered=False).get("reason")
+                       or "No ComfyUI answers")
 
 
 async def _edit_engine_check(client: Any, target: Mapping[str, Any]) -> tuple[str, str] | None:
-    """Classes and files of the edit workflow, from /object_info (cached; GET only).
+    """Whether the engine can take this edit target's job: the one readiness answer (w45-s4 item 3,
+    generation/image_readiness.image_target_readiness: classes, files and s1's slot rule; GET only, cached).
 
-    Returns None when everything is there, else (code, message).  Raises the
-    client's error when the engine does not answer at all.
+    Returns None when it can, else (code, message): edit_workflow_missing / edit_node_missing / edit_model_missing /
+    edit_node_schema with the readiness sentence. Raises the client's error when the engine does not answer at all.
     """
     now = time.monotonic()
     target_id = target.get("target_id") or "qwen-image-2.1-edit-pe-v3"
     if now < _EDIT_ENGINE_PROBE["until"] and _EDIT_ENGINE_PROBE.get("target", "qwen-image-2.1-edit-pe-v3") == target_id:
         return _EDIT_ENGINE_PROBE["error"]
-    adapter, adapter_type = _edit_family_adapter(target_id)
+    answer = await _image_readiness_module().image_target_readiness(target_id, client=client)
+    if answer["state"] == "unreachable":
+        raise _comfy_client_module.ComfyClientError("ComfyUI unreachable", reason_code="unreachable")
     problem: tuple[str, str] | None = None
-    infos: dict[str, Any] = {}
-    try:
-        adapter_type(client).load_assets()
-    except Exception:
+    if answer.get("workflow_missing"):
         # Live once: the workflow was never installed, and every edit died as a vague engine error.
         problem = ("edit_workflow_missing", "The edit workflow is not installed. Reinstall Continuo")
-    for name in adapter.REQUIRED_CLASSES if problem is None else ():
-        body = await client.object_info(name)
-        info = body.get(name) if isinstance(body, dict) else None
-        if not isinstance(info, dict):
-            problem = ("edit_node_missing", f"The image engine has no {name} node")
-            break
-        infos[name] = info
-
-    def options(class_name: str, field: str) -> list[Any]:
-        spec = (((infos.get(class_name) or {}).get("input") or {}).get("required") or {}).get(field)
-        if isinstance(spec, list) and spec:
-            if isinstance(spec[0], list):
-                return spec[0]
-            if len(spec) > 1 and isinstance(spec[1], dict):
-                return list(spec[1].get("options") or [])
-        return []
-
-    if problem is None:
-        files = target["files"]
-        for class_name, field, wanted in (("UNETLoader", "unet_name", files["diffusion_model"]),
-                                          ("CLIPLoader", "clip_name", files["text_encoder"]),
-                                          ("CLIPLoader", "clip_name", files["prompt_enhancer"]),
-                                          ("VAELoader", "vae_name", files["vae"]),
-                                          ("LoraLoaderModelOnly", "lora_name", files["lora"])):
-            if wanted is None:  # this family needs no file of this role (Klein: no LoRA)
-                continue
-            if wanted not in options(class_name, field):
-                problem = ("edit_model_missing", f"The image engine has no {wanted}")
-                break
+    elif not answer["ready"]:
+        code = ("edit_node_missing" if answer["missing_classes"] else "edit_model_missing" if answer["missing_files"]
+                else "edit_node_schema")
+        problem = (code, answer["reason"])
     _EDIT_ENGINE_PROBE.update(until=now + (_EDIT_ENGINE_TTL_SECONDS if problem is None else 10.0), error=problem, target=target_id)
     return problem
 
@@ -158,6 +143,9 @@ class ImageEditRequest(BaseModel):
     model: Any = None
     options: Any = None
     boxes: Any = None  # operation "box": [{id, intent, desc, bbox [x, y, w, h], target_bbox?}] in source pixels
+    # w45-s9 item 1: the bridge action of the Hermes tool this edit runs; its variants are Hermes' only against the
+    # tool's grant for that action (job_authors_1._bridge_job_note), never by this field alone.
+    bridge_action_id: str | None = Field(default=None, pattern=r"^act_[0-9a-f]{32}$", min_length=36, max_length=36)
 
 
 def _edit_owned_job(jobs: Any, states: Any, job_id: str) -> dict[str, Any] | None:
@@ -264,11 +252,11 @@ async def image_edit_submit(request: ImageEditRequest) -> Any:
             return unknown
         if source_job.get("state") != "published":
             return _edit_error(409, "picture_not_ready", "The picture is not ready yet")
-        raw = request.model_dump(by_alias=False, exclude={"schema_", "owner_scope", "operation_id", "source", "mask", "base"})
+        raw = request.model_dump(by_alias=False, exclude={"schema_", "owner_scope", "operation_id", "source", "mask", "base", "bridge_action_id"})
         try:
             intent = contract.normalize_request(raw)
         except contract.EditRequestError as exc:
-            return _edit_error(422, exc.code, exc.message)
+            return _edit_refusal(422, exc)
         outpaint = intent["operation"] == "outpaint"
         request = await _image_box_selection(request, intent, reader, source_job_id) if intent.get("boxes") else request  # image/box_1.py
         if outpaint != (request.mask is None):
@@ -324,7 +312,7 @@ async def image_edit_submit(request: ImageEditRequest) -> Any:
         except _edit_service_module.EditServiceError as exc:  # p13-img: a missing / failing LaMa engine has its own status
             return _edit_error(_edit_service_module.REFUSAL_STATUS.get(exc.code, 422), exc.code, exc.message)
         except contract.EditRequestError as exc:
-            return _edit_error(422, exc.code, exc.message)
+            return _edit_refusal(422, exc)
         client = _comfy_client_module.ComfyUIClient()
         try:
             problem = await _edit_engine_check(client, target)
@@ -373,6 +361,8 @@ async def image_edit_submit(request: ImageEditRequest) -> Any:
             key = contract.variant_key(request.operation_id, index)
             job = await coordinator.submit(key, snapshot, client_request_id=key)
             _image_preview_watch(job)
+            _bridge_job_note(request.bridge_action_id, job["image_producer_job_id"], owner_scope=request.owner_scope, kind="edit",
+                             operation_id=request.operation_id)  # w45-s9 item 1; w45-s20: bound, before the caller's note
             _announce_image_jobs([(job["image_producer_job_id"], None, job.get("state"))], request.owner_scope)
             members.append({"variant_index": index, "seed": seed, "image_producer_job_id": job["image_producer_job_id"],
                             "instruction": snapshot["artist_input"]["prompt"]})
@@ -396,7 +386,7 @@ async def image_edit_submit(request: ImageEditRequest) -> Any:
         return _project_error_response(exc)
     except Exception as exc:  # noqa: BLE001 - finite plugin boundary
         if contract is not None and isinstance(exc, contract.EditRequestError):
-            return _edit_error(422, exc.code, exc.message)
+            return _edit_refusal(422, exc)
         return _image_film_error_response(exc)
 
 
@@ -619,6 +609,8 @@ async def image_edit_capabilities(request: Request) -> Any:
         caps["wired_operations"] = list(contract.OPERATIONS_WIRED)
         caps["request_schema"] = contract.REQUEST_SCHEMA
         caps["result_schema"] = contract.RESULT_SCHEMA
+        # w45-s4 item 3: each offered operation carries the engine's answer (generation/image_readiness)
+        caps = await _image_readiness_module().edit_capabilities_readiness(caps, client=_comfy_client_module.ComfyUIClient())
         return JSONResponse(caps, headers={"Cache-Control": "no-store"})
     except Exception as exc:  # noqa: BLE001 - finite plugin boundary
         return _image_film_error_response(exc)

@@ -34,6 +34,11 @@ import os
 import re
 import struct
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_h3_mctx_win_io", Path(__file__).resolve().parents[1] / "studio_core" / "win_io.py")
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any, Mapping
 
 FORMAT = "mctx_v1"
@@ -87,14 +92,13 @@ def parse_header(raw: bytes) -> dict[str, str]:
 def read_header(path: str | os.PathLike[str]) -> dict[str, str]:
     """The sidecar's string metadata, without reading any tensor."""
     try:
-        with open(path, "rb") as handle:
-            prefix = handle.read(8)
-            if len(prefix) != 8:
-                raise MctxError("the sidecar is too short")
-            (length,) = struct.unpack("<Q", prefix)
-            if length <= 1 or length > MAX_HEADER_BYTES:
-                raise MctxError("the sidecar header is not readable")
-            body = handle.read(length)
+        prefix = _win_io.read_bytes(path, 8)
+        if len(prefix) != 8:
+            raise MctxError("the sidecar is too short")
+        (length,) = struct.unpack("<Q", prefix)
+        if length <= 1 or length > MAX_HEADER_BYTES:
+            raise MctxError("the sidecar header is not readable")
+        body = _win_io.read_bytes(path, 8 + length)[8:]
     except OSError:
         raise MctxError("the sidecar cannot be read") from None
     return parse_header(prefix + body)

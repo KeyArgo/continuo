@@ -146,5 +146,25 @@ async def _image_model_files_admit(spec: Any) -> JSONResponse | None:
         return _edit_engine_unreachable()
     for role, name in custom.items():
         if type(name) is not str or name not in lists.get(role, []):
-            return _edit_error(422, "model_file_unknown", "The image engine does not list this model file")
+            return _edit_error(422, "model_file_unknown", f"The image engine does not list the {role} file {name}")  # w45-s4 item 6
     return None
+
+
+# w45-s4 item 4: a Krea 2 submit (producer_1 image_producer_submit) asks the one readiness answer for its own spec after
+# the file checks; the engine answering and unable to take this graph refuses 503 image_target_not_ready with the facts
+# (as workflow-submit does). An engine that does not answer leaves the submit as before (the coordinator reports it).
+_image_model_missing_before_w45 = _image_model_missing
+
+
+async def _image_model_missing(spec: Any) -> JSONResponse | None:  # noqa: F811 - append-only extension
+    refused = await _image_model_missing_before_w45(spec)
+    if refused is not None or not isinstance(spec, dict):
+        return refused
+    try:
+        answer = await _image_readiness_module().image_target_readiness(
+            _image_readiness_module().KREA2_TARGET, client=_comfy_client_module.ComfyUIClient(), request={"render_spec": spec})
+    except ValueError:
+        return None  # malformed: the contract's own refusal follows
+    if answer.get("state") in ("unreachable", "ready_static"):
+        return None
+    return _image_not_ready(answer)

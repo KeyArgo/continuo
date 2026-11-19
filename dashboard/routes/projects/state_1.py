@@ -18,7 +18,7 @@ async def projects_state_write(request: ProjectStateWriteRequest) -> dict[str, A
     # Lane p5d-frm (Project decision 2 + 4): a legacy outputFolder in the Video state is the project's output folder
     # while the manifest names none, so changing it is a folder decision: the artist's hand only, like a folder approval.
     if _film_caller() == "hermes" and await asyncio.to_thread(_state_output_changed, request):
-        return _folder_refusal()
+        return _folder_refusal(hermes_decision=True)
     try:
         def write() -> dict[str, Any]:  # BCK-227: the whole transaction in one worker thread
             directory = _project_reference_directory(request.project_ref)
@@ -45,7 +45,7 @@ async def projects_state_write(request: ProjectStateWriteRequest) -> dict[str, A
 @project_router.put("/projects/metadata")
 async def projects_metadata(request: ProjectMetadataRequest) -> dict[str, Any]:
     if _film_caller() == "hermes":  # lane p5-prj (HER-012): only the artist's hand approves folders
-        return _folder_refusal()
+        return _folder_refusal(hermes_decision=True)
     try:
         def write() -> dict[str, Any]:  # BCK-227: off the event loop
             directory = _project_reference_directory(request.project_ref)

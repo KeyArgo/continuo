@@ -426,12 +426,17 @@ _EDIT_ID = re.compile(r"^imgedit_[0-9a-f]{32}$")
 
 
 class EditRequestError(ValueError):
-    """A finite, user-facing refusal with a stable code (HTTP 422 at the route)."""
+    """A finite, user-facing refusal with a stable code (HTTP 422 at the route).
 
-    def __init__(self, code: str, message: str) -> None:
+    Lane w45-s11 item 4 (cold review of s10, Medium 3): ``message`` is what the page shows (the artist's words, one fact,
+    no tool, field or form names); ``hint`` is the agent's guidance (the form expected, the tool that lists the choices),
+    answered beside it in the same JSON (routes/image/edit_1.py ``_edit_refusal``)."""
+
+    def __init__(self, code: str, message: str, hint: str | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.hint = hint
 
 
 _box_cache: dict[str, Any] = {}
@@ -554,7 +559,7 @@ def _text(value: Any, name: str, *, required: bool = False, limit: int = MAX_PRO
     if value is None:
         value = ""
     if not isinstance(value, str) or len(value) > limit or any(ord(c) < 32 and c not in "\n\t" for c in value):
-        raise EditRequestError("invalid_edit_request", f"The {name} is invalid")
+        raise EditRequestError("invalid_edit_request", f"The {name} must be text of at most {limit} characters without control characters")
     value = " ".join(value.split())
     if required and not value:
         raise EditRequestError("invalid_edit_request", f"The {name} is empty")
@@ -573,11 +578,13 @@ def normalize_request(raw: Mapping[str, Any]) -> dict[str, Any]:
         raise EditRequestError("invalid_edit_request", "The edit operation is unknown")
     model = raw.get("model") or {}
     if not isinstance(model, Mapping):
-        raise EditRequestError("invalid_edit_request", "The model choice is invalid")
+        raise EditRequestError("invalid_edit_request", "The edit model choice is not readable",
+                               hint="model is an object {family, variant?, files?}; family and variant from continuo_image_edit_capabilities")
     family = model.get("family", "qwen-image-2.1")
     variant = model.get("variant")
     if not isinstance(family, str) or (variant is not None and not isinstance(variant, str)):
-        raise EditRequestError("invalid_edit_request", "The model choice is invalid")
+        raise EditRequestError("invalid_edit_request", "The edit model choice is not readable",
+                               hint="model {family, variant?, files?}: family and variant are text")
     capability = operation_capability(family, variant, operation)
     label = (family_entry(family, variant) or {}).get("label", family)
     if not capability.get("available"):
@@ -620,7 +627,7 @@ def normalize_request(raw: Mapping[str, Any]) -> dict[str, Any]:
     files = model.get("files")
     if files is not None:
         if not isinstance(files, Mapping) or any(not isinstance(v, str) for v in files.values()):
-            raise EditRequestError("invalid_edit_request", "The model files are invalid")
+            raise EditRequestError("invalid_edit_request", "The edit model files are not readable", hint="model.files is an object {role: file name}")
         for role, name in files.items():
             if target["files"].get(role) != name:
                 raise EditRequestError("edit_file_not_offered", f"{name} is not offered for {role} in this edit workflow")
@@ -636,7 +643,7 @@ def normalize_request(raw: Mapping[str, Any]) -> dict[str, Any]:
         raise EditRequestError("invalid_edit_request", "Variants must be 1 to 4")
     seed = raw.get("seed", 0)
     if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed <= SEED_MAX:
-        raise EditRequestError("invalid_edit_request", "The seed is invalid")
+        raise EditRequestError("invalid_edit_request", f"The seed must be a whole number from 0 to {SEED_MAX}")
     strength = raw.get("strength")
     if strength is not None:
         if isinstance(strength, bool) or not isinstance(strength, (int, float)) or not 0.0 <= float(strength) <= 1.0:
@@ -653,22 +660,25 @@ def normalize_request(raw: Mapping[str, Any]) -> dict[str, Any]:
             strength = None
     references_raw = raw.get("references") or []
     if not isinstance(references_raw, list) or len(references_raw) > MAX_REFERENCES:
-        raise EditRequestError("invalid_edit_request", "References are invalid")
+        raise EditRequestError("invalid_edit_request", f"An edit takes at most {MAX_REFERENCES} reference pictures",
+                               hint=f"references is a list of at most {MAX_REFERENCES} objects {{ref, role?, strength?}}")
     references = []
     for item in references_raw:
         if not isinstance(item, Mapping) or not isinstance(item.get("ref"), str) or not 1 <= len(item["ref"]) <= 128:
-            raise EditRequestError("invalid_edit_request", "A reference is invalid")
+            raise EditRequestError("invalid_edit_request", "A reference picture is not readable",
+                                   hint="references[] item is an object {ref (1-128 characters), role?, strength?}")
         role = item.get("role", "reference")
         ref_strength = item.get("strength", 1.0)
         if role not in REFERENCE_ROLES or isinstance(ref_strength, bool) or not isinstance(ref_strength, (int, float)) \
                 or not 0.0 <= float(ref_strength) <= 2.0:
-            raise EditRequestError("invalid_edit_request", "A reference is invalid")
+            raise EditRequestError("invalid_edit_request", "A reference picture has an unknown role or a strength outside 0 to 2",
+                                   hint=f"references[] role is one of {', '.join(REFERENCE_ROLES)}; strength 0 to 2")
         references.append({"ref": item["ref"], "role": role, "strength": round(float(ref_strength), 3)})
     if references and int(capability.get("refs_max") or 0) == 0:
         warnings.append("references_ignored: this model's edit workflow does not take references yet")
     options = raw.get("options") or {}
     if not isinstance(options, Mapping):
-        raise EditRequestError("invalid_edit_request", "Options are invalid")
+        raise EditRequestError("invalid_edit_request", "The edit settings are not readable", hint="options is an object")
     # IMG-073 (artist's rule A-3192): a prompt enhancer/upsampler exists only as a manual checkbox, never
     # automatic. A missing value is off; only an explicit True from the caller turns it on.
     enhancer = options.get("prompt_enhancer", False)
@@ -691,7 +701,9 @@ def normalize_request(raw: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(enhancer, bool) or not isinstance(color_match, bool) or mode not in ("template", "raw") \
             or isinstance(factor, bool) or not isinstance(factor, (int, float)) \
             or not CONTEXT_FACTOR_MIN <= float(factor) <= CONTEXT_FACTOR_MAX:
-        raise EditRequestError("invalid_edit_request", "Options are invalid")
+        raise EditRequestError("invalid_edit_request", "An edit setting is outside what the edit takes",
+                               hint=f"options: prompt_enhancer and color_match true or false, instruction_mode template or raw, "
+                               f"context_factor {CONTEXT_FACTOR_MIN} to {CONTEXT_FACTOR_MAX}")
     if mode == "raw" and not prompt:
         raise EditRequestError("invalid_edit_request", "A raw instruction needs a prompt")
     intent = {

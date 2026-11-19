@@ -123,9 +123,9 @@ def vfr_warnings(plan: Plan) -> list[str]:
 
 
 CURVE_NOTE = ("{format} cannot carry a speed ramp ({why}): {count} clip(s) are written at their average speed "
-              "({names}). FCPXML and FCP7 XML carry the ramp exactly; the reference movie shows it exactly.")
+              "({names}). FCPXML and FCP7 XML carry the ramp exactly; export a film separately to see it.")
 CURVE_WHY = {
-    "OTIO": "its core schema has one LinearTimeWarp speed per clip; the keys are in metadata film_suite.speed_curve",
+    "OTIO": "its standard timeline has one speed per clip; the ramp is stored as custom metadata",
     "EDL": "CMX 3600 M2 has one constant speed per event",
 }
 # Interchange files per package kind (every non-film package also holds the EDLs).
@@ -146,6 +146,41 @@ def curve_warnings(plan: Plan, kind: str | None = None) -> list[str]:
     formats = CONSTANT_ONLY_FORMATS if kind is None else [f for f in CONSTANT_ONLY_FORMATS if f in KIND_FORMATS.get(kind, ())]
     listed = ", ".join(names[:5]) + (" …" if len(names) > 5 else "")
     return [CURVE_NOTE.format(format=f, why=CURVE_WHY[f], count=len(names), names=listed) for f in formats]
+
+
+FRAME_NOTE = ("{format} does not apply all clip framing as standard picture controls ({why}). "
+              "It affects {features} on {count} clip(s) ({names}). Export a film separately to see the framing.")
+FRAME_WHY = {
+    "FCPXML": "its own fit is written; the transform is not",
+    "FCP7 XML": "clip framing is not written",
+    "OTIO": "framing is stored only as custom metadata",
+    "EDL": "CMX 3600 has no picture transform",
+}
+FRAME_FORMATS = {"film": (), "fcpxml": ("FCPXML", "EDL"), "fcp7": ("FCP7 XML", "EDL"), "otio": ("OTIO", "EDL"), "edl": ("EDL",)}
+
+
+def frame_warnings(plan: Plan, kind: str | None = None) -> list[str]:
+    """Lane w46-d (issue #4): one warning per format of the package that drops a clip's zoom, position or move, naming
+    the clips (a clip with only its own fit is exact in FCPXML; the other formats name it too). ``kind`` None = every
+    format (the agent's check)."""
+    from .frame_chain import moves
+    named = [c for c in plan.storyline if c.kind == "clip" and c.frame is not None]
+    if not named:
+        return []
+    formats = [f for f in FRAME_WHY if kind is None or f in FRAME_FORMATS.get(kind, ())]
+    out = []
+    for f in formats:
+        clips = [c for c in named if moves(c.frame) or f != "FCPXML"]
+        if clips:
+            names = [str(c.label or c.id or "clip") for c in clips]
+            listed = ", ".join(names[:5]) + (" …" if len(names) > 5 else "")
+            has_moves = any(moves(c.frame) for c in clips)
+            has_fit = f != "FCPXML" and any(c.frame.get("fit") for c in clips)
+            features = "zoom, position or move" if has_moves else "fit"
+            if has_moves and has_fit:
+                features += " and fit"
+            out.append(FRAME_NOTE.format(format=f, features=features, why=FRAME_WHY[f], count=len(clips), names=listed))
+    return out
 
 
 def film_note(quality: str) -> str:
@@ -384,7 +419,7 @@ def export_package(
     report: dict[str, Any] | None = None
     check: Any = None
     try:
-        warnings = list(plan.warnings) + vfr_warnings(plan) + curve_warnings(plan, kind)
+        warnings = list(plan.warnings) + vfr_warnings(plan) + curve_warnings(plan, kind) + frame_warnings(plan, kind)
         if kind == "film":
             film = partial / f"{base}{film_suffix(quality)}"
             rendered = render_film(plan, film, ffmpeg=ffmpeg, ffprobe=ffprobe, quality=quality, work_dir=partial / ".work",

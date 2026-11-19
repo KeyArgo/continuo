@@ -32,7 +32,7 @@ def _project_state_output(directory: str) -> str | None:
     path = Path(directory) / "state" / "shoot.json"
     if not path.is_file() or path.stat().st_size > 4 * 1024 * 1024:
         return None
-    value = json.loads(path.read_text(encoding="utf-8"))
+    value = json.loads(_win_io.read_text(path, encoding="utf-8"))
     state = value.get("state") if isinstance(value, dict) else None
     folder = state.get("outputFolder") if isinstance(state, dict) else None
     return folder if isinstance(folder, str) and folder.strip() else None
@@ -122,7 +122,7 @@ def _image_keep_to_output(owner_scope: Any, job_id: str, data: bytes, typed: Any
     temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
     try:
         temporary.write_bytes(data)
-        os.replace(temporary, target)
+        _win_io.replace(temporary, target)
     finally:
         temporary.unlink(missing_ok=True)
     return name
@@ -148,7 +148,7 @@ class ProjectOutputWriteRequest(_ProjectRequest):
 async def projects_settings_output(request: ProjectOutputWriteRequest) -> dict[str, Any]:
     """Project settings › Output folder: Change… (a folder) or Reset (null = <project>/output). Artist only."""
     if _film_caller() == "hermes":  # the same rule as a folder approval (Project charter decision 4)
-        return _folder_refusal()
+        return _folder_refusal(hermes_decision=True)
     try:
         def write() -> dict[str, Any] | None:  # BCK-227: the whole transaction off the event loop
             directory = _project_reference_directory(request.project_ref)
@@ -381,7 +381,7 @@ class _OutputConsents:
 
     def _entries(self) -> list[dict[str, str]]:
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            raw = json.loads(_win_io.read_text(self.path, encoding="utf-8"))
         except (OSError, ValueError):
             return []  # none or unreadable: nothing chosen (fail closed)
         rows = raw.get("entries") if isinstance(raw, dict) else None
@@ -406,7 +406,7 @@ class _OutputConsents:
                     json.dump({"schema": "studio.output-folder-consents/1", "entries": rows}, handle, indent=1)
                     handle.flush()
                     os.fsync(handle.fileno())
-                os.replace(temporary, self.path)
+                _win_io.replace(temporary, self.path)
             finally:
                 temporary.unlink(missing_ok=True)
 

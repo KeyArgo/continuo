@@ -233,6 +233,7 @@ REFUSAL_REASON_MESSAGES = MappingProxyType(
         "save_to_not_folder": "The output must be a folder, not a file",  # lane p13-prj item 1
         "project_folder_offline": "A project folder is offline",  # lane p13-prjb finding 1 (the route names the folder)
         "project_rebase_pending": "Moving this project is not finished",  # lane p13-prjc finding 1 (names the folder)
+        "queue_full": "200 takes are waiting; this one was not added",  # lane w46-a (HER-094): the video line's bound
     }
 )
 REFUSAL_REASON_CODES = frozenset(REFUSAL_REASON_MESSAGES)

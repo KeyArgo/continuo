@@ -7,6 +7,15 @@ _local_path_spec = importlib.util.spec_from_file_location(
     "film_suite_local_path", Path(__file__).with_name("studio_core") / "local_path.py")
 _local_path_module = importlib.util.module_from_spec(_local_path_spec)
 _local_path_spec.loader.exec_module(_local_path_module)
+# Lane w45-s11 items 2-3: the one sanitiser for caller-supplied text inside a refusal (studio_core/refusal_text.py).
+_refusal_text_spec = importlib.util.spec_from_file_location(
+    "film_suite_refusal_text", Path(__file__).with_name("studio_core") / "refusal_text.py")
+_refusal_text = importlib.util.module_from_spec(_refusal_text_spec)
+_refusal_text_spec.loader.exec_module(_refusal_text)
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py).
+_win_io_spec = importlib.util.spec_from_file_location("film_suite_win_io", Path(__file__).with_name("studio_core") / "win_io.py")
+_win_io = importlib.util.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 
 
 class RecipeError(RuntimeError):
@@ -63,17 +72,92 @@ _approved_roots_spec.loader.exec_module(_approved_roots_module)
 
 
 class _FolderNotApproved(RecipeError):
-    """Hermes named a folder no one approved, or a request read a file in a folder that is not approved."""
+    """Hermes named a folder no one approved, or a request read a file in a folder that is not approved.
+
+    Lane w45-s10 item 3: carries the refused folder and the scope it was checked against, so every refusal names them."""
 
     reason_code = _approved_roots_module.REASON_CODE
 
-    def __init__(self) -> None:
+    def __init__(self, folder: Any = None, project_ref: Any = None) -> None:
         super().__init__(_approved_roots_module.MESSAGE)
+        self.folder = folder if isinstance(folder, str) and folder.strip() else None
+        self.project_ref = project_ref
 
 
-def _folder_refusal() -> dict[str, Any]:
-    return {"ok": False, "error": _approved_roots_module.MESSAGE, "reason_code": _approved_roots_module.REASON_CODE,
-            "message": _approved_roots_module.MESSAGE}
+# Lane w45-s10 item 3: "Folder not approved." named no folder (1.1.2 agent probe #57: in/ was approved for Loose work,
+# the import named a project). Every folder_not_approved answer now has one shape: the refused folder, the scope that
+# was asked (this project / Loose work) and the artist's way to approve it here. It never approves anything and never
+# asks Hermes to: approval stays the artist's hand (studio_core/approved_roots.py).
+# Lane w45-s11 item 2 (cold review of s10, High 3 + Medium 1): s10 also read every Recent project's manifest and named
+# the projects whose folders hold the refused one, a membership oracle across projects the caller did not ask about.
+# Now the only other scope named is Loose work, and only when a project was asked. Every returned field is capped and
+# sanitised (_refusal_text.one_line: controls and bidi marks become spaces) and the way-out sentence is reserved first.
+_FOLDER_REFUSAL_HERMES = "Folder decisions belong to the artist; Hermes can neither approve nor change them"
+_FOLDER_REFUSAL_FOLDER_MAX = 200
+_FOLDER_REFUSAL_NAME_MAX = 80
+_FOLDER_REFUSAL_MAX = 600
+
+
+def _folder_scope_name(project_ref: Any) -> str:
+    if project_ref is None:
+        return "Loose work"
+    try:
+        project_id = getattr(project_ref, "project_id", None)
+        directory = getattr(project_ref, "directory", None) or _recent_directory(_recent_project_store_factory(), project_id)
+        name = _project_store_factory().read_project(directory, expected_project_id=project_id).get("name")
+        if isinstance(name, str) and name.strip():
+            return f"the project {_refusal_text.one_line(name.strip(), _FOLDER_REFUSAL_NAME_MAX)}"
+        return "this project"
+    except Exception:  # noqa: BLE001 - an unreadable project is still "this project"
+        return "this project"
+
+
+def _folder_approved_elsewhere(folder: str, project_ref: Any) -> list[str]:
+    """["Loose work"] when a project was asked and the Loose-work list holds ``folder``; never another project."""
+    if project_ref is None:
+        return []
+    target = _approved_roots_module.canonical(folder)
+    if target is None:
+        return []
+    try:
+        roots = _loose_work_folders().read()["approved_roots"]
+    except Exception:  # noqa: BLE001 - unreadable: names nothing
+        return []
+    holds = any((c := _approved_roots_module.canonical(r)) and _approved_roots_module.within(target, c) for r in roots or ())
+    return ["Loose work"] if holds else []
+
+
+def _folder_refusal(exc: Any = None, *, folder: Any = None, project_ref: Any = None, hermes_decision: bool = False) -> dict[str, Any]:
+    """The one folder_not_approved answer: ``message`` names the folder, the scope asked, whether Loose work holds it
+    (a project asked) and the artist's way; ``folder``, ``scope``, ``scope_name`` and ``approved_in`` carry the same facts
+    as fields, each one line and bounded. ``hermes_decision``: the request itself was a folder decision (approve, grant,
+    output folder), which is the artist's alone."""
+    folder = folder if folder is not None else getattr(exc, "folder", None)
+    project_ref = project_ref if project_ref is not None else getattr(exc, "project_ref", None)
+    scope = _folder_scope_name(project_ref)
+    answer: dict[str, Any] = {"ok": False, "error": _approved_roots_module.MESSAGE, "reason_code": _approved_roots_module.REASON_CODE}
+    if hermes_decision:
+        head, tail = f"{_approved_roots_module.MESSAGE} ", f"{_FOLDER_REFUSAL_HERMES}."
+    elif isinstance(folder, str) and folder.strip():
+        elsewhere = _folder_approved_elsewhere(folder, project_ref)
+        shown = _refusal_text.one_line(folder, _FOLDER_REFUSAL_FOLDER_MAX)
+        where = f"; it is approved in {', '.join(elsewhere)}" if elsewhere else ""
+        way = ("the artist approves it for this project in Project settings (Approved folders) or with Add folder in Media"
+               if project_ref is not None else "the artist approves it for Loose work with Add folder in Media")
+        head, tail = f"Folder not approved for {scope}: {shown}{where}. ", f"Only {way}."
+        answer.update(folder=shown, approved_in=elsewhere)
+    else:
+        head, tail = f"Folder not approved for {scope}. ", "Only the artist approves folders, in the page."
+    answer.update(message=_refusal_text.fit(head, tail, _FOLDER_REFUSAL_MAX), scope="loose" if project_ref is None else "project",
+                  scope_name=scope)
+    return answer
+
+
+def _refused_folder(path: Any) -> str | None:
+    """The folder a refused path names: the path itself when it is a folder, else the folder that holds it."""
+    if not isinstance(path, str) or not path.strip():
+        return None
+    return path if os.path.isdir(path) else os.path.dirname(path.rstrip("/\\")) or path
 
 
 def _loose_work_folders() -> Any:
@@ -145,8 +229,8 @@ def _request_roots_narrowed(request_roots: Any, project_ref: Any = None, *, path
             project_roots=lambda ref: _approved_roots_module.without_revoked(_manifest_roots_of(ref), revoked),
             known_project_roots=_recent_projects_roots, loose=_loose_work_folders(), owned_roots=owned, revoked=revoked,
         )
-    except _approved_roots_module.FolderNotApproved:
-        raise _FolderNotApproved() from None
+    except _approved_roots_module.FolderNotApproved as exc:
+        raise _FolderNotApproved(getattr(exc, "folder", None), project_ref) from None
     if project_ref is not None:
         pid, pdir = getattr(project_ref, "project_id", None), getattr(project_ref, "directory", None)
         server = _with_output_root(list(_manifest_roots_of(project_ref)), _project_output_existing(pid, pdir),
@@ -157,14 +241,16 @@ def _request_roots_narrowed(request_roots: Any, project_ref: Any = None, *, path
               if isinstance(root, str) and os.path.isdir(root)]
     if revoked:
         sent_paths = path if isinstance(path, (list, tuple)) else [path]
-        if any(_approved_roots_module.in_revoked(p, revoked, [*server, *owned]) for p in sent_paths if p):
-            raise _FolderNotApproved()
+        refused = next((p for p in sent_paths if p and _approved_roots_module.in_revoked(p, revoked, [*server, *owned])), None)
+        if refused is not None:
+            raise _FolderNotApproved(_refused_folder(refused), project_ref)
     if not server_list:
         # Every other route: the sent list narrowed to the server's list (p5-prj); a guard that needs a root
         # ("without approved root fails before admission") still sees an empty list.
         paths = path if isinstance(path, (list, tuple)) else [path]
-        if _dropped and any(_approved_roots_module.path_refused(p, kept, _dropped, owned) for p in paths if p):
-            raise _FolderNotApproved()
+        refused = next((p for p in paths if p and _dropped and _approved_roots_module.path_refused(p, kept, _dropped, owned)), None)
+        if refused is not None:
+            raise _FolderNotApproved(_refused_folder(refused), project_ref)
         roots = kept
         if project_ref is not None:
             roots = _with_output_root(list(kept), _project_output_existing(pid, pdir), _project_media_existing(pid, pdir))
@@ -192,7 +278,7 @@ def _request_roots_narrowed(request_roots: Any, project_ref: Any = None, *, path
             continue
         holder = [r for r in held if (c := _approved_roots_module.canonical(r)) and _approved_roots_module.within(target, c)]
         if not holder:
-            raise _FolderNotApproved()
+            raise _FolderNotApproved(_refused_folder(item), project_ref)
         roots = [*roots, *(r for r in holder if r not in roots)]
     return roots
 

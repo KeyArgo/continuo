@@ -27,6 +27,11 @@ import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_style_boards_win_io", Path(__file__).resolve().parents[1] / "studio_core" / "win_io.py")
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any, Callable
 
 SCHEMA = "studio.style-boards/1"
@@ -315,8 +320,7 @@ class ThumbCache:
         try:
             if path.is_symlink() or not path.is_file():
                 return None
-            with open(path, "rb") as handle:
-                data = handle.read(THUMB_MAX_BYTES + 1)
+            data = _win_io.read_bytes(path, THUMB_MAX_BYTES + 1)
         except OSError:
             return None
         return data if data and len(data) <= THUMB_MAX_BYTES and _image_mime(data) else None
@@ -338,7 +342,7 @@ class ThumbCache:
                 handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temp, path)
+            _win_io.replace(temp, path)
         except OSError:
             try:
                 temp.unlink()  # type: ignore[possibly-undefined]

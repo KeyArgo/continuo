@@ -378,7 +378,7 @@ async def image_producer_submit(request: ImageProducerSubmitRequest) -> dict[str
                 member_job = await coordinator.submit(key, member_snapshot, client_request_id=key)
                 _image_preview_watch(member_job)
                 members.append((member_spec, member_job))
-            job = members[0][1]
+            job = members[0][1]; _job_runs_note([m[1]["image_producer_job_id"] for m in members]); _bridge_job_note(request.bridge_action_id, job["image_producer_job_id"], owner_scope=request.owner_scope, kind="submit", operation_id=request.operation_id)  # w45-s1 item 6 (MED-108); w45-s20: bound grant, before the caller's note
             _announce_image_jobs(
                 [(member_job["image_producer_job_id"], None, member_job.get("state")) for _spec, member_job in members],
                 request.owner_scope,
@@ -394,7 +394,7 @@ async def image_producer_submit(request: ImageProducerSubmitRequest) -> dict[str
                 snapshot,
                 client_request_id=request.operation_id,
             )
-            _image_preview_watch(job)
+            _image_preview_watch(job); _bridge_job_note(request.bridge_action_id, job["image_producer_job_id"], owner_scope=request.owner_scope, kind="submit", operation_id=request.operation_id)  # w45-s7 HER-101; w45-s20: bound grant, before the caller's note
             _announce_image_jobs([(job["image_producer_job_id"], None, job.get("state"))], request.owner_scope)
         result_names = _image_result_names_reserve(request.owner_scope, [m[1]["image_producer_job_id"] for m in members] if members is not None else [job["image_producer_job_id"]])  # lane p6-name
         provider = job.get("provider") or {}
@@ -743,24 +743,23 @@ async def image_producer_status(request: ImageProducerStatusRequest) -> dict[str
             if isinstance(reconciled, dict) and reconciled.get("state"):
                 job = reconciled
         picture_issue: str | None = None
-        if job.get("state") == "ready":
-            # Finished in ComfyUI is not finished for the user: the picture
-            # still sits in ComfyUI's temp output. Bring it home once; after
-            # that the job is published and this branch is never taken again.
-            # A ready job read straight from the ledger carries no descriptor,
-            # so ask the coordinator once (cached, or a re-poll after a
-            # restart) - never twice in one request.
+        if job.get("state") in {"ready", "ingested"}:  # w45-s14: "ingested" (a stop mid-publication) is finished too
+            # Finished in ComfyUI is not finished for the user: the picture still sits in ComfyUI's temp output.
+            # Bring it home once. A ready job read from the ledger carries no descriptor, so ask the coordinator
+            # once (cached, or a re-poll after a restart) - never twice in one request.
             if not polled and not isinstance(job.get("output_descriptor"), Mapping):
                 reconciled = await coordinator.status(request.image_producer_job_id)
                 if isinstance(reconciled, dict) and reconciled.get("state"):
                     job = reconciled
+            # w45-s17: published inside this request, awaited (same collector, lock and failure record as Jobs).
             try:
-                job = await collector.collect(
-                    request.image_producer_job_id, job.get("output_descriptor")
-                )
+                job = await collector.collect(request.image_producer_job_id, job.get("output_descriptor"))
             except Exception as exc:  # noqa: BLE001 - reported, never raised
                 picture_issue = str(getattr(exc, "code", "") or "collect-failed")
+                _ready_collect_record(request.image_producer_job_id, exc)
                 job = handoff.producer_jobs().get_job(request.image_producer_job_id)
+            else:
+                _ready_collect_record(request.image_producer_job_id, None)
         _announce_image_jobs([(job["image_producer_job_id"], state_before, job.get("state"))], request.owner_scope)
         provider = job.get("provider") or {}
         result: dict[str, Any] = {
@@ -783,7 +782,7 @@ async def image_producer_status(request: ImageProducerStatusRequest) -> dict[str
         if job["state"] == "published":
             result["picture"] = "available"
             await _image_steps_persist(job)
-        elif job["state"] == "ready":
+        elif job["state"] in {"ready", "ingested"}:  # w45-s17: ingested is answered like ready
             result["picture"] = "unavailable" if picture_issue else "pending"
         descriptor = job.get("output_descriptor")
         if job["state"] == "ready" and isinstance(descriptor, Mapping):

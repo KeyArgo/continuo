@@ -195,7 +195,7 @@ def _comfy_error(exc: BaseException, prefix: str) -> dict[str, Any]:
     """Map known Comfy lifecycle failures to stable messages, never raw paths."""
     known_messages = {
         _comfy_job_store_module.ProviderBusyError: "Provider is busy",
-        _comfy_job_store_module.JobNotFoundError: "Generation request is invalid",
+        _comfy_job_store_module.JobNotFoundError: "No job with this id is in the ledger",  # w45-s4 item 6
         _comfy_provider_module.InvalidRequestError: "Generation request is invalid",
         _comfy_provider_module.ComfyClientError: "ComfyUI is unreachable",
     }
@@ -223,6 +223,11 @@ def _static_checks_all(value: bool) -> dict[str, bool]:
     return {name: value for name in generation.contract.STATIC_HEALTH_CHECKS}
 
 
+# w45-s1 item 2: the provider ids an image target is named with (image_contract.PROVIDER_ID in the image catalog and
+# jobs, comfyui-local in the generation catalog, openai-codex for the subscription models).
+_IMAGE_HEALTH_PROVIDERS = frozenset({"local-comfyui", "comfyui-local", "openai-codex"})
+
+
 def _unreachable_generation_health(request: GenerationHealthRequest) -> dict[str, Any]:
     out = generation.StaticHealth(
         provider_id=request.provider_id,
@@ -245,6 +250,19 @@ async def generation_health(request: GenerationHealthRequest) -> dict[str, Any]:
     """Truthful static dependency health; never claims inference was tested."""
     if _generation_registry.is_paid_video_provider(request.provider_id):  # lane p5-vid: no key read, no probe
         return _generation_registry.paid_target_refusal()
+    # w45-s1 item 2: every catalog image target answers here with the one readiness answer
+    # (generation/image_readiness.image_target_readiness), under either provider id the tools hand out.
+    readiness = _image_readiness_module()
+    if (request.target_id in readiness.workflow.entries() or request.target_id in readiness.EDIT_ADAPTERS
+            or request.target_id == readiness.KREA2_TARGET):  # + w45-s4 items 3 (area edit) and 4 (Krea 2)
+        if request.provider_id not in _IMAGE_HEALTH_PROVIDERS:
+            return _error(f"invalid_request: {request.target_id} is an image target; provider_id is one of "
+                          + ", ".join(sorted(_IMAGE_HEALTH_PROVIDERS)))
+        try:
+            answer = await readiness.image_target_readiness(request.target_id, client=_comfy_client_module.ComfyUIClient())
+        except ValueError as exc:
+            return _error(f"invalid_request: {exc}")
+        return {**answer, "provider_id": answer.get("provider_id") or request.provider_id}
     try:
         _generation_registry.resolve(request.provider_id, request.target_id)
     except _generation_registry.InvalidRequestError as exc:
@@ -283,6 +301,11 @@ async def generation_health(request: GenerationHealthRequest) -> dict[str, Any]:
             out = health.to_dict()
             if out.get("reason_code") == "unreachable":
                 return _unreachable_generation_health(request)  # w39-p2-tester item 2: one reason, with the address
+            if out.get("state") == "unverified_runtime":
+                # w45-s4 item 5: which version is not reported or not listed, and what the model lists.
+                policy = _comfy_provider_module.runtime_policy
+                facts, sentence = policy.unverified_facts(manifest, await client.system_stats())
+                out.update(runtime_facts=facts, reason=sentence)
             return out
         except Exception:
             return _unreachable_generation_health(request)

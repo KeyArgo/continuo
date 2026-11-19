@@ -185,7 +185,7 @@ def _subtitles_words_of(path: str, sha: str, language: str | None) -> dict[str, 
     cache = _subtitles_asr_cache()
     target = cache / f"{sha}.json"
     try:
-        cached = json.loads(target.read_text(encoding="utf-8"))
+        cached = json.loads(_win_io.read_text(target, encoding="utf-8"))
         if isinstance(cached, dict) and isinstance(cached.get("words"), list):
             return cached
     except (OSError, ValueError):
@@ -198,7 +198,7 @@ def _subtitles_words_of(path: str, sha: str, language: str | None) -> dict[str, 
         cache.mkdir(parents=True, exist_ok=True)
         temp = target.with_suffix(f".{uuid.uuid4().hex}.tmp")
         temp.write_text(json.dumps({"language": found.get("language"), "words": found.get("words") or []}, ensure_ascii=False), encoding="utf-8")
-        os.replace(temp, target)
+        _win_io.replace(temp, target)
     except OSError:
         pass
     return found
@@ -321,7 +321,7 @@ async def projects_subtitles_transcribe(request: SubtitlesTranscribeRequest) -> 
         return _subtitles_refusal(exc)
     by = _film_caller()
     job_id = "subtx_" + uuid.uuid4().hex
-    job = {"job_id": job_id, "state": "running", "progress": 0.0, "stage": "start", "result": None, "error": None, "done": _thread.allocate_lock()}
+    job = {"job_id": job_id, "state": "running", "progress": 0.0, "stage": "start", "result": None, "error": None, "done": _thread.allocate_lock(), "by": _film_caller()}
     job["done"].acquire()
     with _SUBTITLES_JOBS_LOCK:
         _SUBTITLES_JOBS[job_id] = job

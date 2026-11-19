@@ -36,6 +36,11 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_runtime_policy_win_io", Path(__file__).resolve().parents[1] / "studio_core" / "win_io.py")
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any, Iterable, Mapping
 
 # One minimal environment for every child process (lane w39-env): dashboard/engine_process, loaded by path.
@@ -403,7 +408,7 @@ def runtime_verdict(manifest: Mapping[str, Any], identity: Mapping[str, str] | N
 def read_tested(path: str | os.PathLike[str]) -> list[dict[str, Any]]:
     """Entries of the install record; a missing or unreadable file reads as none (fail to 'untested')."""
     try:
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        payload = json.loads(_win_io.read_text(path, encoding="utf-8"))
     except (OSError, ValueError):
         return []
     if not isinstance(payload, dict) or payload.get("schema") != TESTED_SCHEMA or not isinstance(payload.get("entries"), list):
@@ -433,11 +438,11 @@ def record_tested(path: str | os.PathLike[str], *, target_id: str, versions: Map
         raw: Any = None
         if target.exists():
             try:
-                raw = json.loads(target.read_text(encoding="utf-8"))
+                raw = json.loads(_win_io.read_text(target, encoding="utf-8"))
             except (OSError, ValueError):
                 raw = None
             if not (isinstance(raw, dict) and raw.get("schema") == TESTED_SCHEMA and isinstance(raw.get("entries"), list)):
-                os.replace(target, target.with_name(f"{target.name}.unreadable-{int(time.time() * 1000)}"))
+                _win_io.replace(target, target.with_name(f"{target.name}.unreadable-{int(time.time() * 1000)}"))
                 raw = None
         entries = [entry for entry in (raw or {}).get("entries", []) if _valid_entry(entry)]
         for entry in entries:
@@ -452,7 +457,7 @@ def record_tested(path: str | os.PathLike[str], *, target_id: str, versions: Map
                 json.dump({"schema": TESTED_SCHEMA, "entries": entries}, stream, ensure_ascii=False, sort_keys=True)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary, target)
+            _win_io.replace(temporary, target)
         except BaseException:
             try:
                 os.unlink(temporary)
@@ -521,3 +526,49 @@ __all__ = [
     "detail", "runtime_identity", "runtime_verdict", "read_tested", "record_tested", "expected_frames",
     "verify_take_output",
 ]
+
+# --------------------------------------------------------------------------- unverified runtime facts
+# w45-s4 item 5 (release run finding 4): /generation/health answered ``unverified_runtime`` with no detail. These are
+# the facts behind the "blocked" verdict of runtime_verdict: which version /system_stats did not report, which reported
+# version the manifest does not list, and what it lists.
+_KEY_WORDS = {
+    "comfyui_version": "ComfyUI version",
+    "required_frontend_version": "frontend version",
+    "installed_templates_version": "installed templates version",
+    "required_templates_version": "required templates version",
+}
+_LIST_WORDS = {"comfyui_versions": "ComfyUI", "frontend_versions": "frontend", "workflow_templates_versions": "templates"}
+
+
+def unverified_facts(manifest: Mapping[str, Any], stats: Any) -> tuple[dict[str, Any], str]:
+    """``({reported, not_reported, unlisted, listed, policy}, one stating sentence)`` for a blocked runtime."""
+    system = stats.get("system") if isinstance(stats, Mapping) else None
+    system = system if isinstance(system, Mapping) else {}
+    reported = {k: system[k] for k in RUNTIME_KEYS if type(system.get(k)) is str and _VERSION_RE.match(system[k])}
+    missing = [k for k in RUNTIME_KEYS if k not in reported]
+    compatibility = manifest.get("runtime_compatibility", {}) if isinstance(manifest, Mapping) else {}
+    listed = {name: [v for v in compatibility.get(name, []) if type(v) is str][:12] for name in _LIST_WORDS}
+    unlisted = [k for k, v in reported.items() if v not in compatibility.get(_LIST_FOR_KEY[k], [])]
+    policy = compatibility.get("policy")
+    facts = {"reported": reported, "not_reported": missing, "unlisted": unlisted, "listed": listed, "policy": policy}
+    target = manifest.get("id") if isinstance(manifest, Mapping) else None
+    engine = f"ComfyUI {reported['comfyui_version']}" if "comfyui_version" in reported else "The engine"
+    def shown_for(keys: list[str]) -> str:
+        names = list(dict.fromkeys(_LIST_FOR_KEY[k] for k in keys))
+        return "; ".join(f"{_LIST_WORDS[n]} {', '.join(listed[n])}" for n in names if listed.get(n))
+
+    shown = shown_for(missing or unlisted)
+    if missing:
+        sentence = f"{engine} reports no " + ", no ".join(_KEY_WORDS[k] for k in missing)
+        if shown:
+            sentence += f" (listed for {target}: {shown})"
+    elif unlisted:
+        sentence = ", ".join(f"{'ComfyUI' if k == 'comfyui_version' else _KEY_WORDS[k].capitalize()} {reported[k]}"
+                             for k in unlisted) + f" is not listed for {target}"
+        sentence += f" (listed: {shown})" if shown else ""
+    else:
+        sentence = f"The runtime policy {policy!r} of {target} is not one Continuo knows"
+    return facts, sentence
+
+
+__all__ += ["unverified_facts"]

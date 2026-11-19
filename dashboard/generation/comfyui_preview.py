@@ -37,6 +37,11 @@ import time
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_comfyui_preview_win_io", Path(__file__).resolve().parents[1] / "studio_core" / "win_io.py")
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any, Callable
 
 PREVIEW_CLIENT_ID = "filmsuite-image-preview"
@@ -660,13 +665,13 @@ class StepHistoryStore:
             with open(temp / "steps.json", "w", encoding="utf-8") as out:
                 json.dump(meta, out, separators=(",", ":"))
             try:
-                os.replace(temp, final)
+                _win_io.replace(temp, final)
             except OSError:
                 if (final / "steps.json").is_file():
                     return False  # another writer won; write-once
                 if final.exists():
                     shutil.rmtree(final, ignore_errors=True)  # a torn folder with no steps.json
-                os.replace(temp, final)
+                _win_io.replace(temp, final)
         finally:
             if temp.exists():
                 shutil.rmtree(temp, ignore_errors=True)
@@ -716,8 +721,7 @@ class StepHistoryStore:
         """The stored meta of one take (touches it for LRU), or None."""
         try:
             path = self._dir(job_id) / "steps.json"
-            with open(path, encoding="utf-8") as handle:
-                meta = json.load(handle)
+            meta = json.loads(_win_io.read_text(path, encoding="utf-8"))
         except (ValueError, OSError):
             return None
         if not isinstance(meta, dict) or meta.get("schema") != STEP_HISTORY_SCHEMA or not isinstance(meta.get("frames"), list):

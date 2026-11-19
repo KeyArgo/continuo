@@ -45,7 +45,18 @@ THRESHOLDS = {
 }
 
 
-SYNC_Z_MIN = 2.4  # lane w24-rest: sync_eval.FOREIGN_Z_MIN, the confidence below which the engine calls no match
+def _sync_threshold(path: Path | None = None) -> float:
+    """sync_eval.FOREIGN_Z_MIN, the confidence below which the scene engine calls no match (lane w24-rest), read from
+    that module's source: one literal for both (w45-s4 item 7), without importing its numpy here."""
+    import ast
+    source = path or Path(__file__).resolve().parents[1] / "scene_core" / "sync_eval.py"
+    for node in ast.parse(source.read_text(encoding="utf-8")).body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "FOREIGN_Z_MIN" for t in node.targets):
+            return float(ast.literal_eval(node.value))
+    raise RuntimeError("sync_eval.FOREIGN_Z_MIN is missing")
+
+
+SYNC_Z_MIN = _sync_threshold()
 SYNC_SOURCES = ("scene_engine", "file_start")  # lane w6-scene: which measure the av_offset finding comes from
 
 

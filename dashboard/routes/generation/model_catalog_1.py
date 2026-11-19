@@ -5,6 +5,14 @@ def _model_catalog_client() -> Any:
     return _comfy_client_module.ComfyUIClient()
 
 
+def _image_readiness_module() -> Any:
+    """w45-s1 item 2: the one image readiness answer (generation/image_readiness.py), inside the generation package.
+    w45-s4 item 5: the package is loaded when it is not (a reload dropped it): never ModuleNotFoundError."""
+    if _GENERATION_PACKAGE_NAME not in sys.modules:
+        _load_generation_package()
+    return importlib.import_module(_image_contract_module().__package__ + ".image_readiness")
+
+
 class ModelCatalogValidationRoute(APIRoute):
     """Translate model catalog request-model failures to a finite error."""
 
@@ -59,16 +67,21 @@ async def models_catalog(request: ModelCatalogRequest) -> Any:
                 _model_catalog_client(), _model_catalog_module.required_classes(catalog)
             )
             engine = await asyncio.to_thread(_comfy_endpoint_module.engine_state, answered=classes is not None)
+        # w45-s1 item 2: the picker's availability of every catalog image target is the one readiness answer
+        # (generation/image_readiness.image_target_readiness, the same health and submit use); None without a check.
+        readiness = await _image_readiness_module().catalog_readiness(client=_model_catalog_client()) if request.check_classes else None
         out = await asyncio.wait_for(
             asyncio.to_thread(
                 _model_catalog_module.build_public_catalog,
                 classes,
                 comfy_root=_MODEL_CATALOG_COMFY_ROOT,
                 engine_files=engine_files,
+                readiness=readiness,
                 **({"kinds": tuple(request.kinds)} if request.kinds else {}),
             ),
             _MODEL_CATALOG_TIMEOUT_SECONDS,
         )
+        _catalog_submit_rows(out)
         return {**out, "engine": engine} if engine is not None else out
     except ValueError as exc:
         if getattr(exc, "comfy_folder_setting", False):  # w41-folders: a saved folder that cannot be used, the fact
@@ -82,3 +95,39 @@ async def models_catalog(request: ModelCatalogRequest) -> Any:
             status_code=503,
             content={"error": {"code": "model_catalog_unavailable", "message": "Model catalog is unavailable"}},
         )
+
+
+# Lane w45-s10 item 2: every image row names the tool that submits it, and the Krea 2 rows (Turbo, Raw: the render-spec
+# route, not a workflow target) carry the whole studio.krea2-render-spec/2 the submit takes. The 1.1.2 agent probe was
+# told "Use the catalog render_spec" while no catalog held one, and continuo_image_workflow_health refused the Krea 2
+# target it found here; one catalog read now gives a spec continuo_image_submit takes as it is (seed 0, 1024 x 1024).
+_KREA2_SUBMIT_PROFILES = ("turbo", "raw")
+
+
+_KREA2_SPEC_FOR_CATALOG: list[Any] = []
+
+
+def _krea2_spec_for_catalog() -> Any:
+    """generation/krea2_render_spec.py loaded by file as a top-level module (it then reads the catalog file itself), so
+    this route never registers film_suite_generation.model_catalog (test_models_catalog_route); one source of the spec."""
+    if not _KREA2_SPEC_FOR_CATALOG:
+        path = Path(_model_catalog_module.__file__).with_name("krea2_render_spec.py")
+        spec = importlib.util.spec_from_file_location("film_suite_catalog_krea2_render_spec", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _KREA2_SPEC_FOR_CATALOG.append(module)
+    return _KREA2_SPEC_FOR_CATALOG[0]
+
+
+def _catalog_submit_rows(out: Any) -> None:
+    spec_module = _krea2_spec_for_catalog()
+    for family in out.get("families") or ():
+        if family.get("kind") != "image":
+            continue
+        for variant in family.get("variants") or ():
+            workflow = variant.get("workflow")
+            if isinstance(workflow, dict) and workflow.get("target_id"):
+                variant["submit"] = {"tool": "continuo_image_workflow_submit", "target_id": workflow["target_id"]}
+            elif family.get("id") == "krea2" and variant.get("id") in _KREA2_SUBMIT_PROFILES:
+                variant["submit"] = {"tool": "continuo_image_submit",
+                                     "render_spec": spec_module.default_spec_v2(0, 1024, 1024, variant["id"])}

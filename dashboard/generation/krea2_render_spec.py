@@ -86,6 +86,51 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+# Lane w45-s10 item 1: a whole-shape refusal names the missing and the unexpected keys and the schema it expected
+# (the 1.1.2 agent probe got "render_spec shape invalid" seven times and could not learn what to change). One line of at
+# most 200 characters: the submit route answers it word for word (routes/shared/validation_1.py _render_spec_error).
+_REFUSAL_MAX = 200
+
+
+def _load_refusal_text() -> Any:
+    """studio_core/refusal_text.py by path (lane w45-s11 item 3): the one sanitiser for caller text in a refusal."""
+    import importlib.util as _importlib_util
+    from pathlib import Path as _Path
+    path = _Path(__file__).resolve().parent.parent / "studio_core" / "refusal_text.py"
+    spec = _importlib_util.spec_from_file_location("film_suite_refusal_text_" + _Path(__file__).stem, path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_refusal_text = _load_refusal_text()
+
+
+def _key_list(keys: Any, budget: int) -> str:
+    names = sorted(_refusal_text.one_line(key, 40) for key in keys)  # w45-s11 item 3: one clean line
+    shown: list[str] = []
+    for index, name in enumerate(names):
+        rest = len(names) - index
+        tail = f" and {rest} more" if rest > 1 else ""
+        if len(", ".join([*shown, name])) + len(tail) > budget and shown:
+            return ", ".join(shown) + f" and {rest} more"
+        shown.append(name)
+    return ", ".join(shown)
+
+
+def shape_refusal(where: str, value: Any, expected: Any, schema: str | None = None) -> str:
+    """``<where>: missing a, b; unexpected c (schema X)`` for a dict whose keys are not exactly ``expected``."""
+    suffix = f" (schema {schema})" if schema else ""
+    if type(value) is not dict:
+        return f"{where} must be an object with {_key_list(expected, 120)}{suffix}"[:_REFUSAL_MAX]
+    missing = set(expected) - set(value)
+    unexpected = set(value) - set(expected)
+    budget = max(40, (_REFUSAL_MAX - len(where) - len(suffix) - 28) // (2 if missing and unexpected else 1))
+    parts = ([f"missing {_key_list(missing, budget)}"] if missing else []) + (
+        [f"unexpected {_key_list(unexpected, budget)}"] if unexpected else [])
+    return f"{where}: {'; '.join(parts)}{suffix}"[:_REFUSAL_MAX]
+
+
 def default_spec(seed: int, width: int, height: int) -> dict[str, Any]:
     preset = _TURBO["preset"]
     return {"schema": SCHEMA, "profile": "turbo", "steps": preset["steps"], "cfg": preset["cfg"],
@@ -270,10 +315,10 @@ def default_spec_v2(seed: int, width: int, height: int, profile: str = "turbo") 
 def validate_spec_v2(value: Any, *, model_root: Path | None = None, check_files: bool = True) -> dict[str, Any]:
     keys = set(default_spec(0, 1024, 1024)) | {"files", "batch_index"}
     if type(value) is not dict or set(value) != keys or value.get("schema") != SCHEMA_V2:
-        raise ValueError("render_spec shape invalid")
+        raise ValueError(shape_refusal("render_spec", value, keys, SCHEMA_V2))
     files = value["files"]
     if type(files) is not dict or set(files) != set(V2_FILE_ROLES):
-        raise ValueError("render_spec files invalid")
+        raise ValueError(shape_refusal("render_spec.files", files, V2_FILE_ROLES, SCHEMA_V2))
     choices = v2_file_choices()
     folders: dict[str, str] = {}
     for role in V2_FILE_ROLES:
@@ -323,10 +368,12 @@ def run_member_spec(spec: dict[str, Any], index: int) -> dict[str, Any]:
 def _validate_spec_v1(value: Any, *, model_root: Path | None = None, model_file: str | None = None,
                       model_folder: str = "diffusion_models", check_files: bool = True) -> dict[str, Any]:
     if type(value) is not dict or set(value) != set(default_spec(0, 1024, 1024)):
-        raise ValueError("render_spec shape invalid")
+        raise ValueError(shape_refusal("render_spec", value, default_spec(0, 1024, 1024), SCHEMA))
     spec = dict(value)
-    if spec["schema"] != SCHEMA or type(spec["profile"]) is not str or spec["profile"] not in MODELS:
-        raise ValueError("render_spec profile invalid")
+    if spec["schema"] != SCHEMA:
+        raise ValueError(f"render_spec schema is {SCHEMA} (one picture) or {SCHEMA_V2} (1-8 pictures, with files)")
+    if type(spec["profile"]) is not str or spec["profile"] not in MODELS:
+        raise ValueError(f"render_spec profile invalid: {' or '.join(MODELS)}")
     def integer(name: str, lo: int, hi: int, step: int = 1) -> None:
         n = spec[name]
         if type(n) is not int or not lo <= n <= hi or n % step:
@@ -348,9 +395,9 @@ def _validate_spec_v1(value: Any, *, model_root: Path | None = None, model_file:
         raise ValueError("render_spec loras invalid")
     allowed = catalog_lora_files()
     seen = set()
-    for item in spec["loras"]:
+    for index, item in enumerate(spec["loras"]):
         if type(item) is not dict or set(item) != {"file", "strength"}:
-            raise ValueError("render_spec lora shape invalid")
+            raise ValueError(shape_refusal(f"render_spec.loras[{index}]", item, ("file", "strength")))
         filename = item["file"]
         strength = item["strength"]
         if type(filename) is not str or filename in seen or (filename not in allowed and not custom_lora_name_ok(filename)):

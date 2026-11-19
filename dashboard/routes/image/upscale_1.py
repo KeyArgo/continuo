@@ -113,7 +113,7 @@ async def image_upscale_submit(request: ImageUpscaleRequest) -> Any:
             states.require_owned(previous["request_snapshot"]["context_basis"]["context_id"])
             prior = previous["request_snapshot"]
             if prior["effective_input"]["upscale"] != intent or prior["artist_input"]["seed"] != settings["seed"]:
-                return _edit_error(409, "idempotency_conflict", "This operation id was already used for another upscale. Use a new operation id.")
+                return _edit_error(409, "idempotency_conflict", "This operation id was already used for another upscale")
             return _upscale_answer(request, previous, source_job_id, True)
         client = _comfy_client_module.ComfyUIClient()
         try:

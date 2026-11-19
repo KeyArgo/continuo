@@ -15,6 +15,11 @@ import re
 import secrets
 import threading
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_naming_win_io", Path(__file__).with_name("win_io.py"))
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any
 
 DEFAULT_TEMPLATE = "{project}_{page}_{scene}_{take}_{date}"
@@ -99,7 +104,7 @@ def _read_state(project_dir: str | Path) -> dict[str, Any]:
     try:
         if not path.is_file() or path.stat().st_size > 256 * 1024:
             return {}
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(_win_io.read_text(path, encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     return value if isinstance(value, dict) else {}
@@ -109,7 +114,7 @@ def _write_state(project_dir: str | Path, state: dict[str, Any]) -> None:
     path = _state_path(project_dir)
     temp = path.with_name(f".{STATE_FILE}.{secrets.token_hex(8)}.tmp")
     temp.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
-    os.replace(temp, path)
+    _win_io.replace(temp, path)
 
 
 def read_template(project_dir: str | Path) -> str:

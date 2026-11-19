@@ -32,6 +32,11 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_control_win_io", Path(__file__).resolve().parents[1] / "studio_core" / "win_io.py")
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any, Callable, Mapping
 
 import numpy as np
@@ -188,7 +193,7 @@ class Store:
 
     def read(self) -> dict[str, Any]:
         try:
-            value = json.loads(self.index_path.read_text(encoding="utf-8"))
+            value = json.loads(_win_io.read_text(self.index_path, encoding="utf-8"))
         except FileNotFoundError:
             return {}
         if not isinstance(value, dict) or value.get("schema") != SCHEMA or not isinstance(value.get("items"), dict):
@@ -240,7 +245,7 @@ class Store:
         temporary = self.index_path.with_name(f".index.{uuid.uuid4().hex}.tmp")
         try:
             temporary.write_text(json.dumps(document, ensure_ascii=False, indent=1), encoding="utf-8")
-            os.replace(temporary, self.index_path)
+            _win_io.replace(temporary, self.index_path)
         finally:
             temporary.unlink(missing_ok=True)
 
@@ -315,7 +320,7 @@ def encode_gray(frames: list[np.ndarray], target: Path, ffmpeg: Path, fps: float
     finally:
         if process.poll() is None:
             process.kill()
-    part.replace(target)
+    _win_io.replace(part, target)
 
 
 # ----------------------------------------------------------------- ComfyUI graphs
@@ -671,7 +676,7 @@ class ControlService:
             target = folder / f"{base}.json"
             part = target.with_name(target.stem + ".part.json")
             part.write_text(json.dumps(facts, indent=1), encoding="utf-8")
-            part.replace(target)
+            _win_io.replace(part, target)
             item.update({"kind": "text", "path": str(target), "sentence": facts["sentence"], "camera": {k: facts[k] for k in ("moves", "confidence", "reliable", "shake", "subject_masked")}})
         elif layer == "lineart":
             suffix = ".mp4" if source.kind == "video" else ".png"
@@ -681,7 +686,7 @@ class ControlService:
             chain = LINEART_CHAIN if source.kind == "video" else LINEART_CHAIN.replace(",format=yuv420p[v]", ",format=gray[v]")
             await asyncio.to_thread(_run, [str(self.ffmpeg), "-v", "error", "-y", *_range_args(range_in, range_out), "-i", str(source.path),
                                            "-filter_complex", chain, "-map", "[v]", "-an", *codec, str(part)])
-            part.replace(target)
+            _win_io.replace(part, target)
             item.update({"kind": source.kind, "path": str(target)})
         else:
             comfy = self.comfy_factory()
@@ -707,7 +712,7 @@ class ControlService:
             else:
                 part = target.with_name(target.stem + ".part" + suffix)
                 part.write_bytes(data)
-                part.replace(target)
+                _win_io.replace(part, target)
             item.update({"kind": source.kind, "path": str(target)})
         item["seconds_to_make"] = round(time.monotonic() - started, 2)
         if item["kind"] != "text":

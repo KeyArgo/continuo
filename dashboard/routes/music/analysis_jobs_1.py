@@ -162,8 +162,8 @@ async def music_open(request: MusicOpenRequest) -> dict[str, Any]:
             engine_error = _music_error(exc)
         roots = _request_roots(request.approved_roots, request.project_ref, path=request.path, server_list=True)
         return await asyncio.to_thread(_music_open_sync, request.path, roots, engine_error, request.engine, request.project_ref)
-    except _FolderNotApproved:
-        return _folder_refusal()
+    except _FolderNotApproved as exc:
+        return _folder_refusal(exc)
     except Exception as exc:  # noqa: BLE001 - route boundary translates every engine failure
         return _error(_music_error(exc))
 
@@ -248,7 +248,7 @@ def _music_analyse_start_sync(request: MusicAnalyseStartRequest) -> dict[str, An
                     _MUSIC_SONG_STARTS[digest] = job
                 return _music_job_public(job)
         job = {"job_id": f"man_{uuid.uuid4().hex}", "track_sha256": digest, "engine": engine, "status": "running",
-               "progress": 0.0, "stage": "starting", "stop": False, "result": None, "error": None, "started": time.time()}
+               "progress": 0.0, "stage": "starting", "stop": False, "result": None, "error": None, "started": time.time(), "by": _film_caller()}
         _MUSIC_JOBS[job["job_id"]] = job
         if by_content:
             _MUSIC_SONG_STARTS[digest] = job
@@ -264,8 +264,8 @@ async def music_analyse_start(request: MusicAnalyseStartRequest) -> dict[str, An
     try:
         _load_music_analysis()
         return await asyncio.to_thread(_music_analyse_start_sync, request)
-    except _FolderNotApproved:
-        return _folder_refusal()
+    except _FolderNotApproved as exc:
+        return _folder_refusal(exc)
     except Exception as exc:  # noqa: BLE001 - route boundary translates every engine failure
         return _error(_music_error(exc))
 

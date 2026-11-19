@@ -22,6 +22,11 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_suite_bridge_win_io", Path(__file__).resolve().parents[2] / "studio_core" / "win_io.py")
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any, Callable
 
 STATE_SCHEMA = "studio.suite-ui-state/1"
@@ -346,7 +351,7 @@ def _action_id(value: Any) -> str:
 
 def _read(path: Path) -> dict[str, Any] | None:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(_win_io.read_text(path, encoding="utf-8"))
     except (OSError, ValueError):
         return None
     return value if isinstance(value, dict) else None
@@ -358,7 +363,7 @@ def _write(path: Path, value: dict[str, Any]) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             json.dump(value, handle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        os.replace(temporary, path)
+        _win_io.replace(temporary, path)
     finally:
         try:
             os.unlink(temporary)

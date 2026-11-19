@@ -47,14 +47,14 @@ class VoiceHistoryAddRequest(VoiceProjectRequest):
 
 def _voice_history_path(project_id: str) -> Path:
     if not re.fullmatch(r"prj_[0-9a-f]{32}", project_id):
-        raise _voice_store_module.VoiceStoreError("invalid_voice_state", "project id is invalid")
+        raise _voice_store_module.VoiceStoreError("invalid_voice_state", "project id must be prj_<32 hex>")
     return _voice_state_dir() / f"{project_id}.history.json"
 
 
 def _voice_history_read(project_id: str) -> list[dict[str, Any]]:
     path = _voice_history_path(project_id)
     try:
-        value = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        value = json.loads(_win_io.read_text(path, encoding="utf-8")) if path.is_file() else {}
     except (OSError, ValueError):
         value = {}
     rows = value.get("entries") if isinstance(value, dict) else None
@@ -69,7 +69,7 @@ def _voice_history_add(project_id: str, by: str, text: str) -> dict[str, Any]:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
         temporary.write_text(json.dumps({"schema": "studio.voice-history/1", "project_id": project_id, "entries": rows}, ensure_ascii=False), encoding="utf-8")
-        os.replace(temporary, path)
+        _win_io.replace(temporary, path)
     return entry
 
 
@@ -83,10 +83,15 @@ def _voice_publish_take(*, project_id: str, roots: list[str], line: Mapping[str,
     request = generation.GenerationRequest(
         client_request_id=f"voice-{uuid.uuid4().hex}", provider_id=_VOICE_LOCAL_PROVIDER, target_id=target_id, args=args,
         save_to=str(source), approved_roots=[str(source.parent)], project_id=project_id)
-    record = store.create_or_get_job(request, connection_id=_VOICE_CONNECTION, frozen_destination=str(source.parent), requested_basename=name)
-    store.transition(record.studio_job_id, "running")
-    store.set_output_identity(record.studio_job_id, {"filename": name, "sha256": digest})
-    store.transition(record.studio_job_id, "ready")
+    _take_admit(store, _VOICE_CONNECTION, request.client_request_id)  # lane w45-s6 item 3: rows of a dead process close first
+    try:
+        record = store.create_or_get_job(request, connection_id=_VOICE_CONNECTION, frozen_destination=str(source.parent), requested_basename=name)
+        _job_authors_note([record.studio_job_id])  # w45-s10 item 4: an imported or re-cut take is by its caller
+        store.transition(record.studio_job_id, "running")
+        store.set_output_identity(record.studio_job_id, {"filename": name, "sha256": digest})
+        store.transition(record.studio_job_id, "ready")
+    finally:
+        _take_release(store, request.client_request_id)
     lease = store.acquire_publication_lease(record.studio_job_id, "fs-voice", lease_seconds=120)
     store.release_publication_lease(record.studio_job_id, lease.owner_id, lease.token, published_path=str(source),
                                     source_media_sha256=digest, published_file_sha256=digest)
@@ -203,7 +208,7 @@ def _voice_take_recut(request: VoiceTakeRecutRequest) -> dict[str, Any]:
     if encoded.returncode != 0 or not temporary.is_file():
         temporary.unlink(missing_ok=True)
         raise _voice_runner_module.VoiceRunError("The re-cut take could not be written")
-    os.replace(temporary, target)
+    _win_io.replace(temporary, target)
     pauses = {"before": plan["pauses_before"], "after": plan["pauses_after"], "end_before": plan["end_before"], "end_after": plan["end_after"]}
     args = {"prompt": f"{line['character']}: {line['text']}", "recut_of": request.studio_job_id, "seed": facts.get("seed"),
             "source_target_id": facts.get("target_id"), "pauses_after": plan["pauses_after"], "end_pause": plan["end_after"]}

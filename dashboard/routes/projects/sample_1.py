@@ -166,7 +166,7 @@ def _sample_repair_interrupted(parent: str | None) -> None:
         if not re.fullmatch(r"Sample film(?: \d+)?", target.name) or target.is_symlink():
             continue
         try:
-            marker = json.loads((target / '.continuo-building').read_text(encoding='utf-8'))
+            marker = json.loads(_win_io.read_text(target / '.continuo-building', encoding='utf-8'))
             if not isinstance(marker, dict) or marker.get('sample') is not True:
                 continue
             project_id = marker.get('project_id')
@@ -186,7 +186,7 @@ def _sample_write_marker(target: Path, project_id: str | None = None) -> None:
         data['project_id'] = project_id
     temp = target / ('.studio-' + uuid.uuid4().hex + '.tmp')
     temp.write_text(json.dumps(data), encoding='utf-8')
-    temp.replace(target / '.continuo-building')
+    _win_io.replace(temp, target / '.continuo-building')
 
 
 @project_router.post("/projects/sample/open")

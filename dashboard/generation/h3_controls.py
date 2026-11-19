@@ -26,10 +26,11 @@ from __future__ import annotations
 import copy
 import math
 import os
+import re
 from typing import Any, Iterable, Mapping
 
 TARGET_IDS = ("minimax-h3-frames-v1", "minimax-h3-references-v1")
-CONTROL_KEYS = frozenset({"turbo", "turbo_strength", "recipe", "sigma_shift_video", "sigma_shift_audio", "loras",
+CONTROL_KEYS = frozenset({"turbo", "turbo_strength", "recipe", "passes", "sigmas", "sigma_shift_video", "sigma_shift_audio", "loras",
                           "attention", "sparse", "sparsity", "cache", "engine"})
 COUNT_MIN, COUNT_MAX = 1, 8
 BATCH_KEYS = frozenset({"count", "take_index"})  # take_index is set by the route's fan-out only
@@ -38,7 +39,7 @@ LORA_MAX = 8
 LORA_STRENGTH = (0.0, 2.0)
 TURBO_STRENGTH = (0.0, 2.0)
 SIGMA_SHIFT = (0.01, 100.0)
-RECIPES = ("native", "sandwich", "fast_0903")
+RECIPES = ("native", "sandwich", "fast_0903", "custom")
 ATTENTIONS = ("comfy_kitchen", "sage", "pytorch")  # the catalog stage options (model_catalog.v1.json)
 SPARSES = ("off", "sla", "native")
 CACHES = ("none", "t8", "spectrum")
@@ -47,10 +48,34 @@ SLA_SPARSITY = (0.6, 0.95, 0.85)    # min, max, RC2 value (break-even 0.60 per t
 NATIVE_TAU = (0.0, 4.0, 1.3)        # sol-attn threshold (RC2 value 1.3)
 RECIPE_A_STEPS, RECIPE_C_STEPS = 3, 3
 FAST_0903_C_SIGMAS = "0.9035, 0.6316, 0.3158, 0.0000"
+# Custom passes (w46-b, VID-182): the run's steps split into at most 4 passes, each with its own sampler and noise.
+PASS_MAX = 4
+PASS_STEPS = (1, 100)
+PASS_NOISE = (0.0, 64.0, 1.0)   # s_noise min, max (SamplerLCM's 64 is the smallest maximum of the nodes below), default
+PASS_KEYS = frozenset({"steps", "sampler", "noise", "s_noise", "s_noise_end"})
+# A pass with its own noise value runs the sampler's own node instead of KSamplerSelect.  Every fixed input is the value
+# KSamplerSelect runs with (ComfyUI 0.45.0 comfy_extras/nodes_custom_sampler.py:396-511,585-631 and
+# nodes_advanced_samplers.py:89-117; k_diffusion/sampling.py defaults), so only s_noise (and s_noise_end) differ.
+NOISE_NODES: dict[str, tuple[str, dict[str, Any]]] = {
+    "er_sde": ("SamplerER_SDE", {"solver_type": "ER-SDE", "max_stage": 3, "eta": 1.0}),
+    "lcm": ("SamplerLCM", {"noise_clip_std": 0.0}),
+    "dpmpp_3m_sde": ("SamplerDPMPP_3M_SDE", {"eta": 1.0, "noise_device": "cpu"}),
+    "dpmpp_3m_sde_gpu": ("SamplerDPMPP_3M_SDE", {"eta": 1.0, "noise_device": "gpu"}),
+    "dpmpp_2m_sde": ("SamplerDPMPP_2M_SDE", {"solver_type": "midpoint", "eta": 1.0, "noise_device": "cpu"}),
+    "dpmpp_2m_sde_gpu": ("SamplerDPMPP_2M_SDE", {"solver_type": "midpoint", "eta": 1.0, "noise_device": "gpu"}),
+    "dpmpp_sde": ("SamplerDPMPP_SDE", {"eta": 1.0, "r": 0.5, "noise_device": "cpu"}),
+    "dpmpp_sde_gpu": ("SamplerDPMPP_SDE", {"eta": 1.0, "r": 0.5, "noise_device": "gpu"}),
+    "euler_ancestral": ("SamplerEulerAncestral", {"eta": 1.0}),
+    "dpmpp_2s_ancestral": ("SamplerDPMPP_2S_Ancestral", {"eta": 1.0}),
+}
+NOISE_END_SAMPLERS = ("lcm",)  # SamplerLCM ramps s_noise to s_noise_end over its pass
+# Drawn noise curve (w46-b, VID-181): steps + 1 falling values from at most 1 to 0, sent as one ManualSigmas.
+CURVE_SCHEDULERS = ("simple", "beta")   # the H3 schedulers (h3_conditioning.SCHEDULERS) whose curve is computed here
+CURVE_DECIMALS = 6
 LATENT_UPSCALER = "minimax_h3_latent_upscaler_3d_fp16.safetensors"
 PINNED_TURBO_LORAS = frozenset({"minimax_h3_turbo_v4_step600_ema_pruned_comfyui.safetensors"})
 H3_FAMILY = "MiniMax H3"
-DEFAULTS = {"turbo": True, "turbo_strength": 0.8, "recipe": "native", "sigma_shift_video": 12.0,
+DEFAULTS = {"turbo": True, "turbo_strength": 0.8, "recipe": "native", "passes": [], "sigmas": None, "sigma_shift_video": 12.0,
             "sigma_shift_audio": 3.0, "loras": [], "attention": None, "sparse": "off", "sparsity": None,
             "cache": "none", "engine": "native"}
 
@@ -85,10 +110,12 @@ _SHARK_OPTIONS = ("default_dtype=float32\nmultistep_fallback_sampler=ddim\nmulti
 NEEDS: dict[tuple[str, Any], tuple[tuple[str, str | None, str | None], ...]] = {
     ("recipe", "sandwich"): (("SplitSigmas", None, None), ("DisableNoise", None, None),
                              ("KSamplerSelect", "sampler_name", "dpmpp_3m_sde_gpu"), ("SamplerCustomAdvanced", None, None)),
+    ("recipe", "custom"): (("SplitSigmas", None, None), ("DisableNoise", None, None), ("SamplerCustomAdvanced", None, None)),
     ("recipe", "fast_0903"): (("SplitSigmas", None, None), ("DisableNoise", None, None),
                               ("KSamplerSelect", "sampler_name", "dpmpp_3m_sde_gpu"), ("SamplerCustomAdvanced", None, None),
                               ("LTXVSeparateAVLatent", None, None), ("LTXVConcatAVLatent", None, None),
                               ("ManualSigmas", None, None), ("MinimaxH3LatentUpscaler3D", "model_name", LATENT_UPSCALER)),
+    ("sigmas", True): (("ManualSigmas", None, None),),
     ("loras", True): (("LoraLoaderModelOnly", None, None), ("H3AdaLNLoRAFix", "mode", "port")),
     ("attention", "comfy_kitchen"): (("ModelAttentionBackend", "attention", "comfy kitchen attention"),),
     ("attention", "pytorch"): (("ModelAttentionBackend", "attention", "pytorch attention"),),
@@ -117,12 +144,55 @@ EVIDENCE: dict[tuple[str, Any], dict[str, Any]] = {
 }
 
 
+def _control_diagnostic(detail: str) -> dict[str, Any]:
+    """Turn finite validator details into a structured, safe artist message at the source."""
+    match = re.search(r"passes\[(\d+)\](?:\.(steps|sampler|noise|s_noise_end|s_noise))?", detail)
+    if match:
+        index = int(match.group(1))
+        field = match.group(2)
+        position = "the first pass" if index == 0 else f"pass {index + 1}"
+        label = {"steps": "Steps", "sampler": "Sampler", "noise": "Noise", "s_noise": "Noise amount",
+                 "s_noise_end": "Noise amount at the end"}.get(field, "Settings")
+        if field == "noise" and index == 0 and "must be true" in detail:
+            message = "Noise of the first pass must be on"
+        elif "number from" in detail:
+            limits = re.search(r"number from ([0-9.]+) to ([0-9.]+)", detail)
+            message = f"{label} of {position} must be from {limits.group(1)} to {limits.group(2)}" if limits else f"{label} of {position} is not valid"
+        else:
+            message = f"{label} of {position} is not valid"
+        return {"control": "passes", "field": field, "index": index, "message": message, "detail": detail}
+    if "sigmas" in detail:
+        return {"control": "sigmas", "message": "Noise curve must fall from at most 1 to 0 with one value per step plus one", "detail": detail}
+    total = re.fullmatch(r"the passes add up to (\d+) steps; steps is (\d+)", detail)
+    if total:
+        # w47-r2 item 4 (cold review M2): the artist's words, no parameter name; the page says the same.
+        return {"control": "passes", "message": f"The passes add up to {total.group(1)} steps; the shot has {total.group(2)}", "detail": detail}
+    if "passes" in detail or "pass" in detail:
+        return {"control": "passes", "message": "The passes or their total steps are not valid", "detail": detail}
+    # Engine facts (a node, sampler or LoRA the engine does not have) are already plain and name what to install or
+    # choose; a generic sentence would hide the one fact the artist needs. Every other refusal keeps the generic text.
+    if detail.startswith(("Unavailable: ", "The engine ")) or re.search(r" is not a \S.* LoRA", detail):
+        return {"control": None, "message": detail, "detail": detail}
+    # The remaining refusals are fixed sentences; with their control names in plain words they tell artist and Hermes
+    # the one thing to change ("Turbo strength needs turbo on"). Only a sentence that still carries a field-shaped token
+    # after that becomes the generic one (cold review w47 M2).
+    plain = re.sub(r"\b(" + "|".join(_PLAIN_NAMES) + r")\b", lambda m: _PLAIN_NAMES[m.group(1)], detail)
+    if not re.search(r"\w_\w|\[\d|[a-z]\.[a-z]", plain):
+        return {"control": None, "message": plain[:1].upper() + plain[1:], "detail": detail}
+    return {"control": None, "message": "The sampling controls are not valid", "detail": detail}
+
+
+_PLAIN_NAMES = {"turbo_strength": "Turbo strength", "sigma_shift_video": "Video shift", "sigma_shift_audio": "Sound shift",
+                "take_index": "Take", "sampler_name": "Sampler", "duration_seconds": "Duration", "aspect_ratio": "Aspect ratio"}
+
+
 class H3ControlError(ValueError):
     """Finite refusal of a control request, raised before any side effect."""
 
     def __init__(self, message: str, reason_code: str = "invalid_request") -> None:
         super().__init__(message)
         self.reason_code = reason_code
+        self.diagnostic = _control_diagnostic(message)
 
 
 def _fail(message: str, reason_code: str = "invalid_request") -> H3ControlError:
@@ -201,6 +271,76 @@ def normalize_loras(value: Any) -> list[dict[str, Any]]:
     return out
 
 
+_PASS_FORM = "{steps, sampler, noise, s_noise?, s_noise_end?}"
+
+
+def _sampler_name(value: Any) -> bool:
+    return type(value) is str and 0 < len(value) <= 64 and all(c.isascii() and (c.isalnum() or c == "_") for c in value) \
+        and value == value.lower()
+
+
+def normalize_passes(value: Any, steps: int) -> list[dict[str, Any]]:
+    """The pass list of recipe custom: at most PASS_MAX passes whose steps add up to the run's steps; the first adds noise."""
+    if type(value) is not list or not 1 <= len(value) <= PASS_MAX:
+        raise _fail(f"passes must be a list of at most {PASS_MAX} passes, each {_PASS_FORM}")
+    out = []
+    for index, item in enumerate(value):
+        name = f"passes[{index}]"
+        if not isinstance(item, Mapping):
+            raise _fail(f"{name} must be {_PASS_FORM}")
+        missing = [key for key in ("steps", "sampler", "noise") if key not in item]
+        if missing:
+            raise _fail(f"{name} lacks {', '.join(missing)}; a pass is {_PASS_FORM}")
+        unknown = sorted(str(key) for key in item if key not in PASS_KEYS)
+        if unknown:
+            raise _fail(f"{name} has an unknown field ({len(unknown)}); a pass is {_PASS_FORM}")
+        count = item["steps"]
+        if isinstance(count, bool) or type(count) is not int or not PASS_STEPS[0] <= count <= PASS_STEPS[1]:
+            raise _fail(f"{name}.steps must be a whole number from {PASS_STEPS[0]} to {PASS_STEPS[1]}")
+        sampler = item["sampler"]
+        if not _sampler_name(sampler):
+            raise _fail(f"{name}.sampler must be a sampler name such as er_sde or lcm")
+        if type(item["noise"]) is not bool:
+            raise _fail(f"{name}.noise must be true or false")
+        row: dict[str, Any] = {"steps": count, "sampler": sampler, "noise": item["noise"]}
+        if "s_noise" in item:
+            if sampler not in NOISE_NODES:
+                raise _fail(f"{name}.s_noise is offered for {', '.join(NOISE_NODES)}; {sampler} runs with its own noise")
+            row["s_noise"] = _number(item["s_noise"], f"{name}.s_noise", PASS_NOISE[0], PASS_NOISE[1])
+        if "s_noise_end" in item:
+            if sampler not in NOISE_END_SAMPLERS:
+                raise _fail(f"{name}.s_noise_end is offered for {', '.join(NOISE_END_SAMPLERS)} only")
+            row["s_noise_end"] = _number(item["s_noise_end"], f"{name}.s_noise_end", PASS_NOISE[0], PASS_NOISE[1])
+        out.append(row)
+    if not out[0]["noise"]:
+        raise _fail("the first pass adds the noise: passes[0].noise must be true")
+    total = sum(row["steps"] for row in out)
+    if total != steps:
+        raise _fail(f"the passes add up to {total} steps; steps is {steps}")
+    return out
+
+
+def normalize_sigmas(value: Any, steps: int) -> list[float]:
+    """A drawn curve: steps + 1 numbers, the first at most 1, each smaller than the one before, the last 0."""
+    if type(value) is not list:
+        raise _fail(f"sigmas must be a list of numbers: {steps + 1} values (steps + 1) falling from at most 1 to 0")
+    out: list[float] = []
+    for index, item in enumerate(value):
+        if isinstance(item, bool) or type(item) not in (int, float) or not math.isfinite(item) or item < 0:
+            raise _fail(f"sigmas[{index}] must be a number from 0 to 1")
+        out.append(round(float(item), CURVE_DECIMALS))
+    if len(out) != steps + 1:
+        raise _fail(f"sigmas must hold {steps + 1} values (steps + 1); it holds {len(out)}")
+    if out[0] > 1.0:
+        raise _fail("sigmas[0] must be at most 1")
+    for index in range(1, len(out)):
+        if out[index] >= out[index - 1]:
+            raise _fail(f"sigmas must fall from one value to the next (sigmas[{index}] does not, at {CURVE_DECIMALS} decimals)")
+    if out[-1] != 0.0:
+        raise _fail("sigmas must end at 0")
+    return out
+
+
 def validate_controls(target_id: str, args: Mapping[str, Any], steps: int) -> dict[str, Any]:
     """The normalized control set (every key filled from DEFAULTS); shape rules only, no live check."""
     if target_id not in TARGET_IDS:
@@ -225,8 +365,17 @@ def validate_controls(target_id: str, args: Mapping[str, Any], steps: int) -> di
     if c["recipe"] != "native":
         if c["engine"] != "native":
             raise _fail("a sampling recipe runs on the Native engine only")
+    if c["recipe"] == "custom":
+        if "passes" not in given:
+            raise _fail(f"recipe custom needs passes: a list of {_PASS_FORM}")
+        c["passes"] = normalize_passes(given["passes"], steps)
+    elif "passes" in given:
+        raise _fail("passes need recipe custom")
+    if c["recipe"] in ("sandwich", "fast_0903"):
         if steps < RECIPE_A_STEPS + RECIPE_C_STEPS + 1:
             raise _fail(f"the {c['recipe']} recipe needs at least {RECIPE_A_STEPS + RECIPE_C_STEPS + 1} steps")
+    if "sigmas" in given:
+        c["sigmas"] = normalize_sigmas(given["sigmas"], steps)
     if c["engine"] == "shark" and steps < 2:
         raise _fail("the Shark engine needs at least 2 steps")
     if "loras" in given:
@@ -262,10 +411,18 @@ def needs(controls: Mapping[str, Any]) -> list[tuple[str, str | None, str | None
         keys.append(("attention", controls["attention"]))
     if controls["loras"]:
         keys.append(("loras", True))
+    if controls.get("sigmas") is not None:
+        keys.append(("sigmas", True))
     for key in keys:
         for need in NEEDS.get(key, ()):
             if key == ("sparse", "sla"):
                 need = ("H3SLAAttention", "dense_backend", _SLA_DENSE[controls["attention"]])
+            if need not in out:
+                out.append(need)
+    if controls["recipe"] == "custom":
+        for row in controls["passes"]:
+            need = (NOISE_NODES[row["sampler"]][0], None, None) if "s_noise" in row or "s_noise_end" in row \
+                else ("KSamplerSelect", "sampler_name", row["sampler"])
             if need not in out:
                 out.append(need)
     return out
@@ -361,6 +518,15 @@ def apply_controls(graph: Mapping[str, Any], controls: Mapping[str, Any], *, ste
         _shark(g, new, steps)
     elif controls["recipe"] in ("sandwich", "fast_0903"):
         _recipe(g, new, steps, controls["recipe"])
+    elif controls["recipe"] == "custom":
+        _passes(g, new, controls["passes"])
+    if controls.get("sigmas") is not None:
+        # The drawn curve replaces the pinned BasicScheduler (12) for whatever reads it (native, passes, sandwich, Shark);
+        # fast_0903 keeps its own C tail.  Fixed decimals: ManualSigmas' regex cannot read exponent form.
+        manual = new()
+        g[manual] = {"class_type": "ManualSigmas", "inputs": {"sigmas": curve_text(controls["sigmas"])}}
+        _rewire(g, [_SCHEDULER, 0], [manual, 0])
+        del g[_SCHEDULER]
     _check_links(g)
     return g
 
@@ -413,6 +579,51 @@ def _recipe(g: dict[str, Any], new: _Ids, steps: int, recipe: str) -> None:
     del g[_RUN]
 
 
+def _pass_sampler(g: dict[str, Any], new: _Ids, row: Mapping[str, Any]) -> str:
+    if "s_noise" not in row and "s_noise_end" not in row:
+        return _ksampler(g, new, row["sampler"])
+    class_type, fixed = NOISE_NODES[row["sampler"]]
+    s_noise = row.get("s_noise", PASS_NOISE[2])
+    inputs = {**fixed, "s_noise": s_noise}
+    if class_type == "SamplerLCM":
+        inputs = {"s_noise": s_noise, "s_noise_end": row.get("s_noise_end", s_noise), **fixed}
+    nid = new()
+    g[nid] = {"class_type": class_type, "inputs": inputs}
+    return nid
+
+
+def _passes(g: dict[str, Any], new: _Ids, passes: list[Mapping[str, Any]]) -> None:
+    """Custom passes: the curve (node 12) split by a SplitSigmas cascade, one SamplerCustomAdvanced per pass.
+
+    Pass i runs its own sampler on its share of the curve and continues the latent of pass i-1; a pass with
+    noise takes the seed's noise (node 10), one without DisableNoise.  The artist's single sampler (11) is unused.
+    """
+    run = g[_RUN]["inputs"]
+    guider, latent = list(run["guider"]), list(run["latent_image"])
+    quiet = None
+    source: list[Any] = [_SCHEDULER, 0]
+    for index, row in enumerate(passes):
+        if index < len(passes) - 1:
+            split = new()
+            g[split] = {"class_type": "SplitSigmas", "inputs": {"sigmas": list(source), "step": row["steps"]}}
+            sigmas, source = [split, 0], [split, 1]
+        else:
+            sigmas = list(source)
+        if not row["noise"] and quiet is None:
+            quiet = new()
+            g[quiet] = {"class_type": "DisableNoise", "inputs": {}}
+        sampler = _pass_sampler(g, new, row)
+        nid = new()
+        g[nid] = {"class_type": "SamplerCustomAdvanced", "inputs": {
+            "noise": [_NOISE, 0] if row["noise"] else [quiet, 0], "guider": list(guider), "sampler": [sampler, 0],
+            "sigmas": sigmas, "latent_image": latent}}
+        latent = [nid, 0]
+    _rewire(g, [_RUN, 0], latent)
+    del g[_RUN]
+    if not _consumers(g, _SAMPLER):
+        del g[_SAMPLER]
+
+
 def _shark(g: dict[str, Any], new: _Ids, steps: int) -> None:
     """RC2 SHARK: ClownsharKSampler (etdrk2_2s, all but the last step) -> Chainsampler (res_3m).
 
@@ -435,6 +646,90 @@ def _shark(g: dict[str, Any], new: _Ids, steps: int) -> None:
     _rewire(g, [_RUN, 0], [second, 0])
     for node_id in (_RUN, _GUIDER, _NOISE, _SAMPLER):
         del g[node_id]
+
+
+def curve_text(sigmas: Iterable[float]) -> str:
+    return ", ".join(f"{float(v):.{CURVE_DECIMALS}f}" for v in sigmas)
+
+
+# --------------------------------------------------------------------------- sigma curve
+# The scheduler's own curve to start a drawing from, in plain Python (scipy is not a declared dependency).  ComfyUI 0.45.0:
+# the H3 model sampling is ModelSamplingAV(shift = sigma shift video), a ModelSamplingDiscreteFlow with 1000 steps and
+# multiplier 1000 (comfy/model_sampling.py:294-317,338-351, nodes_minimax_h3.py:408-416): sigmas[i] = time_snr_shift(shift,
+# (i + 1) / 1000) (:289-292).  simple_scheduler: comfy/samplers.py:645-652; beta_scheduler (alpha = beta = 0.6): :696-709.
+
+
+def _flow_sigmas(shift: float) -> list[float]:
+    out = []
+    for i in range(1, 1001):
+        t = i / 1000
+        out.append(t if shift == 1.0 else shift * t / (1 + (shift - 1) * t))
+    return out
+
+
+def _betainc(a: float, b: float, x: float) -> float:
+    """Regularized incomplete beta I_x(a, b) (continued fraction, Lentz)."""
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    front = math.exp(math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b) + a * math.log(x) + b * math.log1p(-x))
+    if x > (a + 1) / (a + b + 2):
+        return 1.0 - _betainc(b, a, 1.0 - x)
+    tiny = 1e-300
+    c, d = 1.0, 1.0 - (a + b) * x / (a + 1)
+    d = 1.0 / (d if abs(d) > tiny else tiny)
+    f = d
+    for m in range(1, 400):
+        m2 = 2 * m
+        for num in (m * (b - m) * x / ((a + m2 - 1) * (a + m2)), -(a + m) * (a + b + m) * x / ((a + m2) * (a + m2 + 1))):
+            d = 1.0 + num * d
+            d = 1.0 / (d if abs(d) > tiny else tiny)
+            c = 1.0 + num / c
+            c = c if abs(c) > tiny else tiny
+            f *= c * d
+        if abs(c * d - 1.0) < 1e-16:
+            break
+    return front * f / a
+
+
+def _beta_ppf(q: float, a: float, b: float) -> float:
+    """Inverse of _betainc by bisection to machine precision."""
+    if q <= 0.0:
+        return 0.0
+    if q >= 1.0:
+        return 1.0
+    low, high = 0.0, 1.0
+    for _ in range(200):
+        mid = (low + high) / 2
+        if mid in (low, high):
+            break
+        if _betainc(a, b, mid) < q:
+            low = mid
+        else:
+            high = mid
+    return (low + high) / 2
+
+
+def sigma_curve(scheduler: str, steps: int, shift: float) -> list[float]:
+    """The curve the pinned BasicScheduler gives for (scheduler, steps, sigma shift video): steps + 1 values ending at 0."""
+    if scheduler not in CURVE_SCHEDULERS:
+        raise _fail(f"scheduler must be one of {', '.join(CURVE_SCHEDULERS)}")
+    if isinstance(steps, bool) or type(steps) is not int or not 1 <= steps <= 100:
+        raise _fail("steps must be a whole number from 1 to 100")
+    sig = _flow_sigmas(_number(shift, "sigma_shift_video", *SIGMA_SHIFT))
+    out: list[float] = []
+    if scheduler == "simple":
+        ss = len(sig) / steps
+        out = [sig[-(1 + int(x * ss))] for x in range(steps)]
+    else:
+        last = -1
+        for x in range(steps):
+            t = round(_beta_ppf(1 - x / steps, 0.6, 0.6) * (len(sig) - 1))  # numpy.rint: half to even, as round()
+            if t != last:
+                out.append(sig[int(t)])
+            last = t
+    return [round(v, CURVE_DECIMALS) for v in out] + [0.0]
 
 
 def _check_links(g: Mapping[str, Any]) -> None:
@@ -508,6 +803,9 @@ _CONTROLS = (
     ("turbo", "sampling", "boolean", "Turbo", None),
     ("turbo_strength", "sampling", "number", "Turbo LoRA strength", {"min": TURBO_STRENGTH[0], "max": TURBO_STRENGTH[1], "step": 0.05}),
     ("recipe", "sampling", "select", "Recipe", list(RECIPES)),
+    ("sigmas", "sampling", "sigma_curve", "Noise schedule", {"min": 0.0, "max": 1.0, "decimals": CURVE_DECIMALS, "schedulers": list(CURVE_SCHEDULERS)}),
+    ("passes", "sampling", "pass_list", "Passes", {"max": PASS_MAX, "noise": {"min": PASS_NOISE[0], "max": PASS_NOISE[1], "default": PASS_NOISE[2]},
+                                                     "noise_samplers": list(NOISE_NODES), "noise_end_samplers": list(NOISE_END_SAMPLERS)}),
     ("sigma_shift_video", "sampling", "number", "Sigma shift video", {"min": SIGMA_SHIFT[0], "max": SIGMA_SHIFT[1], "step": 0.5}),
     ("sigma_shift_audio", "sampling", "number", "Sigma shift audio", {"min": SIGMA_SHIFT[0], "max": SIGMA_SHIFT[1], "step": 0.5}),
     ("engine", "sampling", "select", "Engine", list(ENGINES)),
@@ -520,7 +818,17 @@ _CONTROLS = (
 )
 
 
-def descriptor(problems: Mapping[tuple[str, Any], str | None] | None, *, lora_names: list[str] | None = None) -> dict[str, Any]:
+def live_samplers(info: Mapping[str, Any] | None) -> list[str] | None:
+    """The sampler names the live KSamplerSelect offers (None when the engine was not read)."""
+    node = info.get("KSamplerSelect") if isinstance(info, Mapping) else None
+    if not isinstance(node, Mapping):
+        return None
+    inputs = node.get("input") or {}
+    return [str(o) for o in _options((inputs.get("required") or {}).get("sampler_name"))]
+
+
+def descriptor(problems: Mapping[tuple[str, Any], str | None] | None, *, lora_names: list[str] | None = None,
+               samplers: list[str] | None = None) -> dict[str, Any]:
     """Per control: options, default, live availability (``problems`` None = engine not checked) and evidence.
 
     ``problems`` maps (control, value) to the first live problem (None = available).
@@ -546,6 +854,17 @@ def descriptor(problems: Mapping[tuple[str, Any], str | None] | None, *, lora_na
             if lora_names is not None:
                 row["files"] = list(lora_names)
             row["evidence"] = evidence("loras", True)
+        elif cid == "sigmas":
+            problem = None if problems is None else problems.get(("sigmas", True))
+            row["state"] = "unchecked" if problems is None else ("unavailable" if problem else "available")
+            if problem:
+                row["reason"] = problem
+            row["evidence"] = evidence("sigmas", True)
+        elif cid == "passes":
+            row["state"] = "available" if problems is not None else "unchecked"
+            if samplers is not None:
+                row["samplers"] = list(samplers)
+            row["evidence"] = evidence("passes", True)
         elif cid in ("turbo", "turbo_strength", "sigma_shift_video", "sigma_shift_audio", "sparsity"):
             row["state"] = "available" if problems is not None else "unchecked"
             row["evidence"] = evidence(cid, True)
@@ -562,6 +881,6 @@ def option_needs() -> dict[tuple[str, Any], tuple[tuple[str, str | None, str | N
 
 
 __all__ = ["BATCH_KEYS", "batch_args", "batch_id", "take_client_request_id", "take_seed", "ATTENTIONS", "CACHES", "CONTROL_KEYS", "COUNT_MAX", "COUNT_MIN", "DEFAULTS", "ENGINES", "EVIDENCE", "H3ControlError",
-           "H3_FAMILY", "NEEDS", "RECIPES", "SPARSES", "TARGET_IDS", "admit_loras", "apply_controls", "canvas_after",
+           "H3_FAMILY", "NEEDS", "RECIPES", "SPARSES", "TARGET_IDS", "admit_loras", "apply_controls", "canvas_after", "live_samplers", "normalize_passes", "normalize_sigmas", "sigma_curve", "curve_text", "NOISE_NODES", "PASS_MAX",
            "class_problem", "descriptor", "evidence", "has_controls", "lora_family", "needs", "normalize_loras",
            "option_needs", "requested", "split_args", "validate_controls"]

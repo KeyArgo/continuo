@@ -124,7 +124,7 @@ async def _media_trim(
     except (RecipeError, OSError, TypeError, ValueError) as exc:
         if isinstance(exc, _RebasePending):  # lane p13c-safe item 2: the destination lies at a pending re-base's old place
             return {"error": str(exc), "reason_code": exc.reason_code}
-        return _folder_refusal() if isinstance(exc, _FolderNotApproved) else _error(f"Media trim failed: {exc}")
+        return _folder_refusal(exc) if isinstance(exc, _FolderNotApproved) else _error(f"Media trim failed: {exc}")
     finally:
         if temp_path is not None:
             _safe_unlink(temp_path)
@@ -274,7 +274,7 @@ async def media_prepare(request: MediaPrepareRequest) -> dict[str, Any]:
             "prepared_sha256": trimmed["prepared_sha256"],
         }
     except (RecipeError, OSError, TypeError, ValueError) as exc:
-        return _folder_refusal() if isinstance(exc, _FolderNotApproved) else _error(f"Media preparation failed: {exc}")
+        return _folder_refusal(exc) if isinstance(exc, _FolderNotApproved) else _error(f"Media preparation failed: {exc}")
     finally:
         if cache_lock is not None:
             await cache_lock.release()
@@ -306,7 +306,7 @@ async def media_probe(request: MediaProbeRequest) -> dict[str, Any]:
             **media,
         }
     except (RecipeError, OSError, TypeError, ValueError) as exc:
-        return _folder_refusal() if isinstance(exc, _FolderNotApproved) else _error(f"Media probe failed: {exc}")
+        return _folder_refusal(exc) if isinstance(exc, _FolderNotApproved) else _error(f"Media probe failed: {exc}")
 
 
 @router.post("/media/frame")
@@ -382,7 +382,7 @@ async def media_frame(request: MediaFrameRequest) -> dict[str, Any]:
             "data_url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii"),
         }
     except (RecipeError, OSError, TypeError, ValueError) as exc:
-        return _folder_refusal() if isinstance(exc, _FolderNotApproved) else _error(f"Media frame failed: {exc}")
+        return _folder_refusal(exc) if isinstance(exc, _FolderNotApproved) else _error(f"Media frame failed: {exc}")
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
@@ -596,7 +596,7 @@ def _media_folder_take_id(path: str) -> str | None:
         recipe = clip.with_name(clip.stem + ".flux3.json")
         if not recipe.is_file() or recipe.stat().st_size > _MEDIA_TAKE_RECIPE_MAX:
             return None
-        named = json.loads(recipe.read_text(encoding="utf-8"))
+        named = json.loads(_win_io.read_text(recipe, encoding="utf-8"))
     except (OSError, ValueError):
         return None
     job_id = named.get("job_id") if isinstance(named, dict) else None
@@ -617,8 +617,8 @@ async def media_list(request: MediaListRequest) -> dict[str, Any]:
     """Bounded listing: see ``_scan_media_roots``. The walk runs in a worker thread."""
     try:
         roots = _request_roots(request.approved_roots, request.project_ref, server_list=True)
-    except _FolderNotApproved:
-        return _folder_refusal()
+    except _FolderNotApproved as exc:
+        return _folder_refusal(exc)
     return await asyncio.to_thread(_scan_media_roots, roots)
 
 
@@ -685,7 +685,7 @@ def _media_poster_render(path: Path, size: int, target: Path) -> bytes:
         body = temporary.read_bytes()
         if not body:
             raise RecipeError("thumbnail unavailable")
-        os.replace(temporary, target)
+        _win_io.replace(temporary, target)
         return body
     finally:
         temporary.unlink(missing_ok=True)
@@ -694,7 +694,7 @@ def _media_poster_render(path: Path, size: int, target: Path) -> bytes:
 def _media_poster(path: Path, stat: os.stat_result, size: int) -> bytes:
     target = _media_poster_file(path, stat, size)
     try:
-        return target.read_bytes()
+        return _win_io.read_bytes(target)
     except OSError:
         return _media_poster_render(path, size, target)
 
@@ -737,13 +737,13 @@ async def media_thumb(request: MediaThumbRequest) -> Response:
         # Lane w22-cut (CUT-177): a folder still of the cut by ref, at viewer size (Resolve's viewer shows the linked
         # original). Only with its project; the footage index confines it to the project's folders.
         if request.project_ref is None:
-            return JSONResponse(_folder_refusal(), status_code=403)
+            return JSONResponse(_folder_refusal(), status_code=403)  # a cut ref without its project: no folder to name
         try:
             located, _facts = await asyncio.to_thread(_timeline_footage_lookup(request.project_ref.project_id), request.ref)
             path = _confined_local_path(str(located), _request_roots([], request.project_ref, path=str(located), server_list=True))
         except RecipeError as exc:
             if isinstance(exc, _FolderNotApproved):
-                return JSONResponse(_folder_refusal(), status_code=403)
+                return JSONResponse(_folder_refusal(exc), status_code=403)
             return unavailable(404, "thumbnail unavailable")
         except Exception:  # noqa: BLE001 - not this project's footage, moved or changed: offline
             return unavailable(404, "thumbnail unavailable")
@@ -757,7 +757,7 @@ async def media_thumb(request: MediaThumbRequest) -> Response:
             path = _confined_local_path(request.path, _request_roots(request.approved_roots, request.project_ref, path=request.path, server_list=True))
         except RecipeError as exc:
             if isinstance(exc, _FolderNotApproved):
-                return JSONResponse(_folder_refusal(), status_code=403)
+                return JSONResponse(_folder_refusal(exc), status_code=403)
             status = 403 if "outside every approved root" in str(exc) else 404
             return unavailable(status, f"Media thumbnail failed: {exc}")
         limit = MEDIA_THUMB_MAX_SIZE

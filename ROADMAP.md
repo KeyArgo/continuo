@@ -13,6 +13,7 @@ Release requirements met and proven on a real install. Each line states the requ
 - A shipped skill routes Hermes from what the artist asks for to the right Continuo tools.
 - API keys must never appear in logs, recipes or jobs; a leak would fail catalog rules.
 - Catalog README and tool texts tell the truth: ComfyUI is asked at 127.0.0.1:8188, then 127.0.0.1:8000, or at the address set in Hermes Settings, exports land in the project output folder, BUILD-INFO counts the real tree.
+- Cold dependency install unproven; green can hide failed preparation.
 - Ctrl+K 'Continuo' finds nothing and the sidebar may need a restart after install: a first-minutes break on a fresh marketplace install.
 - Extra files under hermes/film-suite make state_root refuse, which breaks the plugin at load.
 - Fresh install needs two restarts before audio analysis works; new users install on a fresh machine.
@@ -73,15 +74,18 @@ Release requirements met and proven on a real install. Each line states the requ
 - Track set and Clip/Audio/History inspector are core Cut structure.
 - Use in Cut is still gated on analysis, so the no-analysis path is broken in a core flow.
 - Waveform reads as a near-solid band; a new user sees an unreadable waveform at once.
+- Words appear for songs mapped before the update, without re-analysing.
 
 ### Image
 
+- Image offers every prepared local image model (Krea 2, Anima, Ideogram 4, FLUX.2 Klein, FLUX.3 Klein, MOSS, Qwen-Image 2.1, H3), each backed by a real Suite render.
 - Right-click Select inverse is not clickable on the selection, a basic edit step a new user hits; the rest of the parity list can wait.
 
 ### Video
 
 - A take must be seen large in an app-styled player; small/browser playback is visible in the first minute.
 - Every visible H3 setting must actually change the local render, or the main video controls silently lie.
+- Generate must work with the project output folder on a fresh project; the 'No output folder' path still exists.
 - Video upscale uses RelayVSR (one-step video super-resolution, Comfy-Org repackage, Apache-2.0; x2 LightX2V 5.2 GB + 0.13 GB VAE, x4 the same) as the default method, e.g. 480p/720p H3 takes to 1080p, by hand and by Hermes; SeedVR2 stays for stills.
 - Wrong setup record sends users hunting a node that is in core.
 
@@ -104,6 +108,7 @@ Release requirements met and proven on a real install. Each line states the requ
 
 - Media column header is one calm row per DESIGN.md (internal): search, one filter/view menu, type filter as one segmented control, the count tells what is shown (no "All media 39" beside an active filter), no framed button next to ghost icons.
 - Side panels: both sides have the same visible resize handle with remembered width on every page; no dead gutter between the media grid and the canvas.
+- The Hermes mark in a running line is at most 20 px on every page.
 
 ### Other
 
@@ -116,24 +121,28 @@ Built; being proven on a real install or finished.
 
 ### Installs and runs on a fresh machine
 
-- Cold dependency install unproven; green can hide failed preparation.
 - Runs on macOS with Apple Silicon: contributed, and run by the contributor on macOS 26.5; the Continuo pane in Hermes Desktop on a Mac is not yet tried.
 
 ### Song to cut (Audio, Music, Cut)
 
-- Words appear for songs mapped before the update, without re-analysing.
+- A new user installs from the GitHub URL without being stopped: the Hermes install scan verdict is explained in the README (answer y / --force) and the avoidable findings are reduced.
+- The artist can cut existing footage to a song end to end (folder in Media → Source IN/OUT → Insert/Append → Fit to beats → Ducking → Deliver MP4 + FCPXML), by hand and through Hermes.
 
 ### Image
 
-- Replace cuts the new object at the selection edge (sunken boat); a new user would see this broken result in the main edit demo.
+- Generate shows a live preview during the run with every image model that can (P-H3-Image, Klein, Ideogram and the other catalog workflows), as Krea 2 Create and Qwen Edit do.
+- Replace places the whole new object believably in the picture (not cut off at the selection, hull in the water).
 
-### Video
+### Hermes can do what the hand does; jobs
 
-- Generate must work with the project output folder on a fresh project; the 'No output folder' path still exists.
+- In plain words, Hermes picks the tools itself, changes the project, the artist corrects by hand, Hermes reads the correction back, and one Undo reverts Hermes' step.
 
 ### Polished UI: one component per job, every page
 
-- Visible on the main demo path (Hermes generates while Image is open).
+- A design gate in run-gate (internal) measures the inventory parts on every page (size, radius, spacing, label placement, handle presence) against DESIGN.md (internal) and fails on a deviation.
+- Before the repo goes public, the medium security findings and 17–20, 26 are fixed, each with a test, and the rest list is documented.
+- Controls follow one size and label rule: square icon buttons, labels outside fields, one primary action per panel, disabled controls say why, empty states and job states use the shared components.
+- Words on screen follow the vocabulary and prose rules on every page (no developer words, one spelling, short labels, truthful counts and times).
 
 ### Other
 
@@ -143,23 +152,14 @@ Built; being proven on a real install or finished.
 
 Planned for the release.
 
-### Song to cut (Audio, Music, Cut)
+### Video
 
-- A new user installs from the GitHub URL without being stopped: the Hermes install scan verdict is explained in the README (answer y / --force) and the avoidable findings are reduced.
-- Audio is a demo page and still reads as bolted-on parts; one approved coherent layout is needed.
-
-### Image
-
-- Preview while generating is part of pro image UX; Krea already proves the path.
+- Video Generate shows a live preview on the stage during the run, also for several takes in a row; a model without one says so quietly.
 
 ### Polished UI: one component per job, every page
 
-- A design gate in run-gate (internal) measures the inventory parts on every page (size, radius, spacing, label placement, handle presence) against DESIGN.md (internal) and fails on a deviation.
-- Controls follow one size and label rule: square icon buttons, labels outside fields, one primary action per panel, disabled controls say why, empty states and job states use the shared components.
 - Empty areas show their button text (found blank, for example Import… in an empty Media column).
-- Visible on the main demo path (Hermes generates while Image is open).
-- Words on screen follow the vocabulary and prose rules on every page (no developer words, one spelling, short labels, truthful counts and times).
 
 ---
 
-166 release musts in the plan; 73 of them are internal working notes and are not listed here.
+166 release musts in the plan; 71 of them are internal working notes and are not listed here.

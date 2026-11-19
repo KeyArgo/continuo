@@ -102,7 +102,7 @@ def _scene_file(project_ref: ProjectReference, take_id: str | None, media_id: st
 
 def _scene_cached(sha: str) -> dict[str, Any] | None:
     try:
-        data = json.loads((_scene_cache_dir() / f"{sha}.json").read_text(encoding="utf-8"))
+        data = json.loads(_win_io.read_text(_scene_cache_dir() / f"{sha}.json", encoding="utf-8"))
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) and data.get("schema") == "studio.scene-map/1" else None
@@ -124,7 +124,7 @@ def _scene_job_run(job: dict[str, Any], file: Path) -> None:
         cache.mkdir(parents=True, exist_ok=True)
         tmp = cache / f"{job['source']['sha256']}.json.part"
         tmp.write_text(json.dumps(scene_map), encoding="utf-8")
-        tmp.replace(cache / f"{job['source']['sha256']}.json")
+        _win_io.replace(tmp, cache / f"{job['source']['sha256']}.json")
         job.update(state="done", map=scene_map)
     except Exception as exc:  # noqa: BLE001 - the job answers failed, the reason without a path
         job.update(state="failed", error={"code": "runner_failed", "message": f"The scene engine failed ({type(exc).__name__}).", "retryable": True})
@@ -286,8 +286,9 @@ def _scene_camera_sync(request: SceneCameraRequest) -> dict[str, Any]:
         else:
             try:
                 file = _confined_local_path(request.path, _request_roots(request.approved_roots, request.project_ref, path=request.path))
-            except _FolderNotApproved:
-                return {**_scene_error(_FolderNotApproved.reason_code, str(_FolderNotApproved())), **_folder_refusal()}
+            except _FolderNotApproved as exc:
+                refusal = _folder_refusal(exc)
+                return {**_scene_error(_FolderNotApproved.reason_code, refusal["message"]), **refusal}
             except RecipeError:
                 return _scene_error("file_outside_roots", "The file is missing or outside the approved folders.")
         return _camera_measure(file)

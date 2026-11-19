@@ -270,8 +270,8 @@ async def image_recipe_read(request: ImageRecipeReadRequest) -> Any:
                 return refuse("path_refused", imported.OUTSIDE_ROOTS)
             try:
                 roots = _request_roots(request.approved_roots, request.project_ref, path=request.path)
-            except _FolderNotApproved:
-                return JSONResponse(status_code=403, content=_folder_refusal())
+            except _FolderNotApproved as exc:
+                return JSONResponse(status_code=403, content=_folder_refusal(exc))
             try:
                 data, _name = await asyncio.to_thread(imported.read_local, request.path, roots, _confined_local_path)
             except imported.ImageImportError as exc:

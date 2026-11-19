@@ -41,6 +41,7 @@ IMAGE_WORKFLOW_ADAPTERS = {
     "moss_image": "catalog_create_workflow_adapter",
     "flux3_klein": "catalog_create_workflow_adapter",
     "p_h3_image": "p_h3_image_workflow_adapter",  # w24-h3img: P-H3-Image LoRA on the H3 FL2VA transformer (create + edit)
+    "minimax_h3_image": "h3_image_workflow_adapter",  # w46-c: MiniMax-H3-Image (official), recipe + second pass above 16 MP
     "krea2": "krea2_edit_workflow_adapter",
     # w6-gptimage: GPT Image through the artist's ChatGPT (Codex) subscription (Hermes' openai-codex provider).
     "gpt_image": "paid.subscription_image_provider",  # w20-cat: in generation/paid/ (absent in the catalog build)
@@ -878,6 +879,9 @@ def variant_evidence(evidence: Mapping[str, Any], family_id: str, variant_id: st
         out["reason"] = f"Rendered {entry['date']}" + (f" in {entry['seconds']:g} s" if "seconds" in entry else "")
     else:
         out["reason"] = "Fails in the image engine: " + entry["error"]
+    if entry.get("comfyui"):
+        # w45-s1 item 2: a proof belongs to the engine version it was made on (lesson 5); shown, never a reason.
+        out["comfyui"] = entry["comfyui"]
     return out
 
 
@@ -912,6 +916,7 @@ def public_catalog(
     evidence: Mapping[str, Any] | None = None,
     kinds: Iterable[str] = DEFAULT_KINDS,
     subscription: Mapping[str, Any] | None = None,
+    readiness: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Path-free projection: file NAMES with presence, never folders/sources.
 
@@ -919,6 +924,9 @@ def public_catalog(
     without a render record says so in its reason (the tooltip), never by being
     withheld (w39-p2-open).  Missing files or a render that failed for real keep no
     ``suite_targets`` and say ``availability="unavailable"`` with the plain reason.
+    w45-s1 item 2: ``readiness`` (target_id -> generation/image_readiness answer) decides a catalog workflow
+    target's availability: the engine running now cannot take it -> ``unavailable`` with the reason that names what
+    is missing (or that the engine does not answer). A render on record is a fact in the reason, never the cause.
     """
     if evidence is None:
         evidence = load_evidence()
@@ -938,12 +946,31 @@ def public_catalog(
             if workflow and family["id"] in IMAGE_WORKFLOW_ADAPTERS:
                 targets = [workflow["target_id"]]
             offered = bool(targets) and family["kind"] == "image"
+            ready = readiness.get(workflow["target_id"]) if readiness is not None and workflow else None
             if offered and family.get("provider_group"):
                 availability, reason = ("runnable", "Connected") if connected else ("unavailable", "Not connected")
             elif offered and health["missing_files"]:
                 availability, reason = "unavailable", "Missing model files: " + ", ".join(health["missing_files"])
             elif offered and proof["state"] == "failed":
                 availability, reason = "unavailable", proof["reason"]
+            elif offered and workflow and family["id"] in IMAGE_WORKFLOW_ADAPTERS:
+                # w45-s1 item 2: availability is the engine's answer now (generation/image_readiness, the same answer
+                # health and submit give); a render on record is a fact behind it, never the reason.
+                proof_fact = proof["reason"] + (f" on ComfyUI {proof['comfyui']}" if proof.get("comfyui") else "")
+                if ready is None:
+                    # check_classes=false: no engine was asked; the files' answer stands and the reason is the record.
+                    availability, reason = "runnable", proof["reason"]
+                elif ready.get("ready"):
+                    availability, reason = "runnable", f"{ready['reason']} · {proof_fact}"
+                else:
+                    availability, reason = "unavailable", ready["reason"]
+            elif offered and _krea2_answer(readiness, targets, variant["id"]) is not None:
+                # w45-s4 item 4: the Krea 2 render-spec route (Turbo / Raw) answers like a workflow target: the
+                # engine's answer for this profile (generation/image_readiness), the record a fact behind it.
+                ready = _krea2_answer(readiness, targets, variant["id"])
+                proof_fact = proof["reason"] + (f" on ComfyUI {proof['comfyui']}" if proof.get("comfyui") else "")
+                availability, reason = (("runnable", f"{ready['reason']} · {proof_fact}") if ready.get("ready")
+                                        else ("unavailable", ready["reason"]))
             elif offered:
                 availability, reason = "runnable", proof["reason"]
             elif family["kind"] == "image" and not workflow:
@@ -986,6 +1013,16 @@ def public_catalog(
     return {"schema": SCHEMA, "families": families}
 
 
+def _krea2_answer(readiness: Mapping[str, Any] | None, targets: list[str], profile: str) -> Mapping[str, Any] | None:
+    """w45-s4 item 4: the readiness of the Krea 2 render-spec route for one profile (turbo / raw), else None."""
+    answer = readiness.get("krea2-turbo-t2i-create") if readiness is not None and targets == ["krea2-turbo-t2i-create"] else None
+    if not isinstance(answer, Mapping):
+        return None
+    if answer.get("state") == "unreachable":
+        return answer
+    return (answer.get("profiles") or {}).get(profile) or answer
+
+
 def build_public_catalog(
     classes: frozenset[str] | None,
     *,
@@ -993,12 +1030,13 @@ def build_public_catalog(
     catalog_path: Path | None = None,
     kinds: Iterable[str] = DEFAULT_KINDS,
     engine_files: Iterable[str] = (),
+    readiness: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Blocking: load catalog, scan folders, project. Run off the event loop."""
     catalog = load_catalog(catalog_path)
     found = discover_model_files(model_roots(comfy_root))  # None: FILM_SUITE_COMFY_ROOT, read now
     found = with_engine_files(found, engine_files)
-    return public_catalog(catalog, found, classes, _now(), kinds=kinds, subscription=_subscription_state())
+    return public_catalog(catalog, found, classes, _now(), kinds=kinds, subscription=_subscription_state(), readiness=readiness)
 
 
 def _subscription_state() -> dict[str, Any]:

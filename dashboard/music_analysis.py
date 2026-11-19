@@ -56,6 +56,11 @@ import uuid
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_music_analysis_win_io", Path(__file__).resolve().parent / "studio_core" / "win_io.py")
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any
 
 import numpy as np
@@ -1944,8 +1949,7 @@ def analyze_cached(path: str | Path, engine: str | None = None, progress: Any = 
 
     if cache_file.exists():
         try:
-            with open(cache_file, "r", encoding="utf-8") as f:
-                cached = json.load(f)
+            cached = json.loads(_win_io.read_text(cache_file, encoding="utf-8"))
             if _is_valid_cache_entry(cached, sha256) and _is_current_engine_entry(cached, engine):
                 return cached
         except (OSError, json.JSONDecodeError):
@@ -1998,8 +2002,7 @@ def cached_analysis(path: str | Path, sha256: str | None = None) -> dict[str, An
     digest = sha256 or _sha256_file(Path(path))
     cache_file = _cache_dir() / f"{digest}.json"
     try:
-        with open(cache_file, "r", encoding="utf-8") as f:
-            cached = json.load(f)
+        cached = json.loads(_win_io.read_text(cache_file, encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     if not _is_valid_cache_entry(cached, digest):
@@ -2031,7 +2034,7 @@ def _refresh_key(cached: dict[str, Any], cache_file: Path) -> dict[str, Any]:
     try:
         tmp = cache_file.with_name(cache_file.name + ".part")
         tmp.write_text(json.dumps(cached), encoding="utf-8")
-        tmp.replace(cache_file)
+        _win_io.replace(tmp, cache_file)
         marker.write_text(KEY_METHOD, encoding="utf-8")
     except OSError:
         pass

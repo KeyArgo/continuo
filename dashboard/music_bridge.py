@@ -17,6 +17,11 @@ import threading
 import time
 import uuid
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_music_bridge_win_io", Path(__file__).resolve().parent / "studio_core" / "win_io.py")
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any, Callable
 
 # Store hygiene (Weg A1): a window that has not reported for a day is gone;
@@ -513,7 +518,7 @@ def _semantic_state(value: Any) -> Any:
 
 def _read_json(path: Path) -> dict[str, Any] | None:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(_win_io.read_text(path, encoding="utf-8"))
     except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     return value if isinstance(value, dict) else None
@@ -529,7 +534,7 @@ def _atomic_write(path: Path, value: dict[str, Any], *, durable: bool = True) ->
             handle.flush()
             if durable:
                 os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        _win_io.replace(temporary, path)
     finally:
         try:
             os.unlink(temporary)

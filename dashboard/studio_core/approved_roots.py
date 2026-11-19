@@ -25,6 +25,11 @@ import tempfile
 import threading
 from collections.abc import Callable, Iterable
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_approved_roots_win_io", Path(__file__).with_name("win_io.py"))
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any
 import importlib.util as _import_util
 
@@ -52,8 +57,9 @@ class FolderNotApproved(ValueError):
 
     reason_code = REASON_CODE
 
-    def __init__(self, message: str = MESSAGE) -> None:
+    def __init__(self, message: str = MESSAGE, folder: str | None = None) -> None:
         super().__init__(message)
+        self.folder = folder  # w45-s10 item 3: the refused folder, named in the answer
 
 
 def canonical(root: Any) -> str | None:
@@ -123,7 +129,7 @@ class LooseWorkFolders:
     def read(self) -> dict[str, Any]:
         with _LOOSE_LOCK:
             try:
-                raw = json.loads(self.path.read_text(encoding="utf-8"))
+                raw = json.loads(_win_io.read_text(self.path, encoding="utf-8"))
             except FileNotFoundError:
                 return {"schema": LOOSE_SCHEMA, "revision": 0, "approved_roots": []}
             except (OSError, ValueError):
@@ -151,7 +157,7 @@ class LooseWorkFolders:
                     json.dump(document, handle, ensure_ascii=False, indent=2)
                     handle.flush()
                     os.fsync(handle.fileno())
-                os.replace(temp, self.path)
+                _win_io.replace(temp, self.path)
             except BaseException:
                 try:
                     os.unlink(temp)
@@ -185,7 +191,7 @@ class FolderGrants:
     def read(self) -> dict[str, Any]:
         with _LOOSE_LOCK:
             try:
-                raw = json.loads(self.path.read_text(encoding="utf-8"))
+                raw = json.loads(_win_io.read_text(self.path, encoding="utf-8"))
             except FileNotFoundError:
                 return {"schema": GRANTS_SCHEMA, "granted": [], "revoked": []}
             except (OSError, ValueError):
@@ -214,7 +220,7 @@ class FolderGrants:
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as handle:
                     json.dump(document, handle, ensure_ascii=False, indent=2)
-                os.replace(temp, self.path)
+                _win_io.replace(temp, self.path)
             except BaseException:
                 try:
                     os.unlink(temp)
@@ -292,5 +298,5 @@ def effective_roots(
     server = without_revoked(server, revoked)
     kept, dropped = narrow(requested, server, owned)
     if dropped and caller == "hermes":
-        raise FolderNotApproved()
+        raise FolderNotApproved(folder=dropped[0])
     return kept, dropped

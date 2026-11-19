@@ -134,8 +134,10 @@ def write_states(entry: dict[str, Any], width: int, height: int, folder: Path) -
 def burn_inputs(entry: dict[str, Any], width: int, height: int, total_frames: int, rate_text: str, folder: Path) -> list[str] | None:
     """ffmpeg input arguments for one RGBA picture stream of the whole film: a concat list with ONE entry per film
     frame (the state's PNG, or a transparent PNG where no subtitle shows) and no durations, so frame n of the stream
-    is entry n; burn_filter numbers the frames at the cut's rate. Durations would be stored in microseconds by the
-    concat demuxer and could put a state one frame early or late. None when the cut has no subtitle state."""
+    is entry n; the input rate ``-r`` stamps entry n at n / rate where it is read (CUT-207: a frame counter inside the
+    filter graph, ``setpts=N``, restarts when ffmpeg re-initialises the graph at a picture parameter change, and the
+    cues landed on wrong frames). Durations would be stored in microseconds by the concat demuxer and could put a
+    state one frame early or late. None when the cut has no subtitle state."""
     states = [s for s in write_states(entry, width, height, folder) if s["start"] < total_frames]
     if not states:
         return None
@@ -149,7 +151,7 @@ def burn_inputs(entry: dict[str, Any], width: int, height: int, total_frames: in
     lines = ["ffconcat version 1.0", *(f"file '{path.name}'" for path in shown)]
     listing = folder / "burn.ffconcat"
     listing.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return ["-f", "concat", "-safe", "0", "-i", str(listing)]
+    return ["-r", rate_text, "-f", "concat", "-safe", "0", "-i", str(listing)]
 
 
 # ffmpeg colorspace names (colour.py ``matrix``) -> swscale out_color_matrix names.
@@ -164,12 +166,13 @@ def to_film_yuv(matrix: str = "bt709") -> str:
 
 
 def burn_filter(index: int, rate_text: str, out_label: str = "subs", matrix: str | None = None) -> str:
-    """Input ``index`` (burn_inputs' stream) as one picture per film frame: frame n at n / rate, in a time base of
-    exactly one frame (a coarser base gives two frames one timestamp and the muxer drops one of them). With
+    """Input ``index`` (burn_inputs' stream, stamped n / rate by its input rate) as one picture per film frame, in a
+    time base of exactly one frame (a coarser base gives two frames one timestamp and the muxer drops one of them).
+    No frame counter: the timestamps come from the input, so a graph re-initialisation cannot renumber them. With
     ``matrix`` the pictures are converted to the film's 4:2:0 (to_film_yuv), else they stay RGBA."""
     num, den = (int(x) for x in rate_text.split("/")) if "/" in rate_text else (int(rate_text), 1)
     convert = "format=rgba" if matrix is None else f"format=rgba,{to_film_yuv(matrix)}"
-    return f"[{index}:v:0]{convert},settb={den}/{num},setpts=N,fps={num}/{den}[{out_label}]"
+    return f"[{index}:v:0]{convert},settb={den}/{num},setpts=round(PTS),fps={num}/{den}[{out_label}]"
 
 
 def frame_table(entry: dict[str, Any], total_frames: int) -> list[tuple[int, int, int, int | None]]:

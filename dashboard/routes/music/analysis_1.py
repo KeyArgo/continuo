@@ -23,8 +23,8 @@ async def music_analyze(request: MusicAnalyzeRequest) -> dict[str, Any]:
         proxy = await asyncio.to_thread(_ensure_music_proxy, source, proxy_file)
         evict_analysis_cache(protected={digest})
         return _music_metadata(analysis, proxy)
-    except _FolderNotApproved:
-        return _folder_refusal()
+    except _FolderNotApproved as exc:
+        return _folder_refusal(exc)
     except Exception as exc:  # noqa: BLE001 - route boundary translates every engine failure
         if cache_file is not None and not cache_preexisting:
             cache_file.unlink(missing_ok=True)
@@ -55,8 +55,8 @@ async def music_peaks(request: MusicPeaksRequest) -> dict[str, Any]:
             "duration": cached.get("duration", 0.0),
             "buckets_per_sec": MUSIC_PEAKS_PER_SECOND,
         }
-    except _FolderNotApproved:
-        return _folder_refusal()
+    except _FolderNotApproved as exc:
+        return _folder_refusal(exc)
     except Exception as exc:  # noqa: BLE001 - route boundary translates every engine failure
         return _error(_music_error(exc))
 

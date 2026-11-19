@@ -306,10 +306,12 @@ class Krea2CreateAdapter:
             return self.compile_render_spec(spec, artist["prompt"], source=source)
         return compiled
 
-    def compile_render_spec(self, spec: Mapping[str, Any], prompt: str, *, source: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        """Compile only a hash-pinned profile and its separately declared mutations."""
+    def compile_render_spec(self, spec: Mapping[str, Any], prompt: str, *, source: Mapping[str, Any] | None = None,
+                            check_files: bool = True) -> dict[str, Any]:
+        """Compile only a hash-pinned profile and its separately declared mutations. ``check_files=False``
+        (w45-s4 item 4, readiness): the engine's own lists answer for the files, not the disk."""
         from .krea2_render_spec import LORA_MAX, validate_spec
-        validated = validate_spec(dict(spec))
+        validated = validate_spec(dict(spec), check_files=check_files)
         profile = validated["profile"]
         if source is None:
             source = self.load_assets()[1]

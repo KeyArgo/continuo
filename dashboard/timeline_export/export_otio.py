@@ -22,6 +22,7 @@ in metadata) between the two clips with ``in_offset`` = its frames before the cu
 """
 from __future__ import annotations
 
+import copy
 import json
 from fractions import Fraction
 from pathlib import Path
@@ -123,6 +124,12 @@ def build_otio(plan: Plan, remuxes: dict[str, Path], *, name: str) -> dict[str, 
     def picture(clip: PlanClip) -> dict[str, Any]:
         info = clip.info
         meta = {"studio": {"id": clip.id, "source": dict(clip.source or {})}}
+        if clip.frame is not None:  # lane w46-d: the clip's own framing, exact, for a reader that knows it
+            meta.setdefault("film_suite", {})["frame"] = copy.deepcopy(clip.frame)  # move.part (lane w47-p3) included
+            if clip.frame.get("move"):
+                # Record-frame domain of the original move; ordinary OTIO readers do not apply it.
+                meta["film_suite"]["frame_span"] = {"version": 1, "offset": clip.frame_offset,
+                                                     "whole": clip.frame_whole if clip.frame_whole is not None else clip.duration}
         if info.is_still:
             ref = _reference(info.path, clip.duration, rate)
             return _clip(clip.label or info.path.stem, ref, 0, rate, clip.duration, rate, enabled=clip.enabled, metadata=meta)
@@ -132,7 +139,7 @@ def build_otio(plan: Plan, remuxes: dict[str, Path], *, name: str) -> dict[str, 
             start = clip.source_in + clip.source_frames_used(rate) - 1  # a reversed clip starts on its last frame
         if clip.retime is not None and clip.retime.curve:
             from .export_curve import constant_speed
-            meta["film_suite"] = {"speed_curve": [dict(k) for k in clip.keys()], "exact": constant_speed(clip, rate) is not None}
+            meta.setdefault("film_suite", {}).update({"speed_curve": [dict(k) for k in clip.keys()], "exact": constant_speed(clip, rate) is not None})
             if constant_speed(clip, rate) == 0 and clip.retime.reverse:
                 start = clip.source_in  # a hold shows its one frame
         return _clip(clip.label or info.path.stem, ref, start, clip.source_rate, clip.duration, rate,

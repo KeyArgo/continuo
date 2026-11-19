@@ -79,12 +79,16 @@ async def _h3f_stage_and_compile(manifest: Any, graph: Any, studio_job_id: str, 
 @router.post("/generation/take/finish")
 async def h3_take_finish(request: H3TakeFinishRequest) -> dict[str, Any]:
     """Finish one finished H3 take (upscale and/or RIFE 48 fps) into a new linked take; poll it like any take."""
+    try:  # w45-s4 item 2: a folder nobody approved is the named refusal /submit gives, never HTTP 500
+        roots = _request_roots(request.approved_roots, request.project_ref)
+    except _FolderNotApproved as exc:
+        return _folder_refusal(exc)
     submit_request = SubmitRequest(
         schema="studio.generation-request/1", provider_id="comfyui-local", target_id=_h3f_module.TARGET_ID,
         client_request_id=request.client_request_id,
         args={"take": request.studio_job_id, "upscale": request.upscale, "rife": request.rife},
         save_to=request.save_to, requested_basename=request.requested_basename,
-        approved_roots=_request_roots(request.approved_roots, request.project_ref),
+        approved_roots=roots,
         **({"project_id": request.project_id, "project_ref": request.project_ref} if request.project_id is not None else {}),
     )
     return await submit(submit_request)

@@ -111,6 +111,12 @@
     "api_sha256": "f9047a0592c7128c13f6c8c79b1865967e39220d40949cfb0db789608356c1fc",
     "manifest_sha256": "6e661ed8141d11fa3c9217cb9c89613c197f354a9919fc7ae62a05fca47f7fa2"
    }
+  ],
+  "minimax-h3-image-create-v1": [
+   {
+    "api_sha256": "9e3d58d2c84512aee2e353620c8b70652f12c7daa7ede272a095cb7d979d37b0",
+    "manifest_sha256": "4bad60fc8513231ee5df72fa3ab1d8168e32f2a507da53dfaa432ed38bea3c7f"
+   }
   ]
  },
  "note": "Lane w29-fix2 W29F-P0: every (manifest_sha256, api_sha256) pin a workflow target had in an earlier committed catalog. A job persisted under one of them keeps decoding (image_workflow_contract.validate_snapshot). Append only: when a pin changes, add the old pair here (tests/backend/test_w29_fix2_workflow_pins.py checks the git history). Lane w32-fix5 IMG-216b: the Image Edit contract (image_edit_contract.EDIT_TARGETS, /image/edit) reads the same file under its own target ids (capability_manifest_sha256 -> manifest_sha256, api_graph_sha256 -> api_sha256); tests/backend/test_w32_fix5_h3_edit_steps.py checks its git history.",

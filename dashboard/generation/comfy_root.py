@@ -166,6 +166,29 @@ def _is_dir(path: Path) -> bool:
         return False
 
 
+MAX_LISTED_FOLDERS = 64
+
+
+def model_folders(models: Path | None, root: Path) -> list[dict[str, object]]:
+    """Lane w46-eg G-a (FRM-047): every folder ComfyUI reads models from, as ``[{path, kinds}]``: the models folder
+    elsewhere first (when set), then ``<root>/models`` and each ``extra_model_paths.yaml`` folder. One rule, read
+    from ``model_catalog.model_roots`` (the rule ``GET /models/missing`` reads files by); no ComfyUI call."""
+    try:
+        catalog = _sibling("film_suite_comfy_root_model_catalog", _HERE / "model_catalog.py")
+        roots, kinds_of = catalog.model_roots(root), catalog.FOLDER_KINDS
+    except Exception:  # noqa: BLE001 - a copy of this file without its siblings: the folders it knows
+        return [{"path": str(models), "kinds": []}] if models is not None else []
+    out: dict[str, list[str]] = {}
+    if models is not None:
+        out[str(models)] = list(kinds_of)
+    for kind, paths in roots.items():
+        for path in paths:
+            listed = out.setdefault(str(Path(path).parent), [])
+            if kind not in listed:
+                listed.append(kind)
+    return [{"path": path, "kinds": kinds} for path, kinds in list(out.items())[:MAX_LISTED_FOLDERS]]
+
+
 def describe(key: str) -> dict[str, object]:
     """One folder as the settings page shows it: the saved value, the variable, the folder in use and where it comes
     from (``variable`` | ``setting`` | ``default``), whether it exists and looks like what it should be, and the fact
@@ -177,6 +200,8 @@ def describe(key: str) -> dict[str, object]:
         "key": key, "value": raw if isinstance(raw, str) else ("" if raw is None else str(raw)),
         "variable": VARIABLES[key], "variable_set": bool(variable), "variable_value": variable or None,
         "source": "default", "folder": None, "exists": False, "looks_like": False, "reason": None}
+    if key == MODELS_SETTING:
+        field["folders"] = []
     try:
         folder = comfy_root() if key == ROOT_SETTING else comfy_models()
     except FolderSettingError as exc:
@@ -184,6 +209,11 @@ def describe(key: str) -> dict[str, object]:
         return {**field, "source": SOURCE_SETTING if own else "default",
                 "folder": (raw.strip() if isinstance(raw, str) else None) if own else None, "reason": str(exc)}
     source = folder_source(key) or "default"
+    if key == MODELS_SETTING:
+        try:
+            field["folders"] = model_folders(folder, comfy_root())
+        except FolderSettingError:
+            field["folders"] = [{"path": str(folder), "kinds": []}] if folder is not None else []
     if folder is None:  # no models folder of its own: the ComfyUI folder's models
         try:
             folder = comfy_root() / "models"
@@ -229,5 +259,5 @@ def comfy_models() -> Path | None:
 
 
 __all__ = ["ENV", "FolderSettingError", "LABELS", "MODELS_ENV", "MODELS_SETTING", "ROOT_SETTING", "VARIABLES",
-           "MODEL_SUBFOLDERS", "comfy_models", "comfy_root", "default_comfy_root", "describe", "folder_reason",
+           "MODEL_SUBFOLDERS", "comfy_models", "model_folders", "comfy_root", "default_comfy_root", "describe", "folder_reason",
            "folder_source", "setting_text", "variable_value"]

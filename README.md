@@ -88,8 +88,8 @@ you changed the scene or the cut since then, the edit is refused and nothing is 
 | ffmpeg | Required | For Cut, Deliver and Audio; tested with 7.1.1. Looked up in `FFMPEG_PATH`, then `PATH`, then `C:\ffmpeg\bin`. macOS: `brew install ffmpeg`. |
 | ComfyUI | For generation | Generates pictures, video, music and voice. Without a setting Continuo asks this machine: `http://127.0.0.1:8188`, then `http://127.0.0.1:8000` (the ComfyUI desktop app). Another address: Hermes Settings › Plugins › Continuo › ComfyUI address (Test, then Save; it applies to the next request, no restart). The environment variable `FILM_SUITE_COMFY_URL` overrides the setting. An address on another machine sends your prompts and pictures to that machine. |
 | ComfyUI&nbsp;folders | For generation | Where ComfyUI is installed (its models and custom nodes) and, if you keep them elsewhere, your models: Hermes Settings › Plugins › Continuo › ComfyUI folder and Models folder (Choose… or type the path, then Save; it applies to the next request, no restart). Empty: the usual install, `Documents\ComfyUI-Easy-Install\ComfyUI` on Windows (macOS: see [macOS](#macos)), and that folder's `models`. A folder that is missing, relative or on the network is refused with the reason. The environment variables `FILM_SUITE_COMFY_ROOT` and `FILM_SUITE_COMFY_MODELS` override the settings. Only you set these folders; Hermes may read them. |
-| GPU | For generation | Script, Cut, Audio analysis and Deliver run on the CPU, so a GPU is optional for them. Generation uses your GPU. |
-| Disk | 23&nbsp;MB&nbsp;+&nbsp;511&nbsp;MB | Measured: the plugin 23 MB; its Python packages 511 MB, set up by Hermes. Models need extra space, see [Models](#models-optional). |
+| GPU | For generation | Script, Cut, Audio analysis and Deliver run on the CPU, so a GPU is optional for them. Generation uses your GPU. When Continuo has used ComfyUI and nothing has run there for 10 minutes, Continuo asks ComfyUI to free its graphics memory; change the minutes in Hermes Settings › Plugins › Continuo › Free graphics memory after (0 = never). |
+| Disk | 24&nbsp;MB&nbsp;+&nbsp;511&nbsp;MB | Measured: the plugin 24 MB; its Python packages 511 MB, set up by Hermes. Models need extra space, see [Models](#models-optional). |
 
 ### macOS
 
@@ -204,7 +204,7 @@ Each generation feature runs a ComfyUI workflow. Install only the models of the 
 
 | Page | Workflows | Size per workflow |
 |:---|---:|---:|
-| **Image › Create** | 9 | 5.6–31.2 GB |
+| **Image › Create** | 10 | 5.6–37.8 GB |
 | **Image › Edit** | 9 | 11.0–31.2 GB |
 | **Video** | 8 | 4.5–45.6 GB |
 | **Audio** (5 in progress) | 7 | 0.5–40.1 GB |
@@ -234,6 +234,7 @@ Face, custom nodes on GitHub.
 | krea2-raw-t2i-create | Image › Create (Krea 2 Raw) | 18.99 GB | 3 | Comfy-Org/Krea-2; Comfy-Org/Qwen-Image; Comfy-Org/Qwen3-VL |
 | krea2-turbo-t2i-create | Image › Create (Krea 2 Turbo) | 18.99 GB | 3 | Comfy-Org/Krea-2; Comfy-Org/Qwen-Image; Comfy-Org/Qwen3-VL |
 | moss-image-sft-create-v1 | Image › Create (MOSS-Image) | 20.25 GB | 3 | Comfy-Org/Flux-2-Dev; Comfy-Org/MOSS-Image |
+| minimax-h3-image-create-v1 | Image › Create (MiniMax-H3-Image) | 37.83 GB | 3 | Comfy-Org/MiniMax-H3; Comfy-Org/MiniMax-H3-Image |
 | p-h3-image-lora-t2i-v1 | Image › Create (P-H3-Image) | 31.19 GB | 4 | Comfy-Org/MiniMax-H3; PrunaAI/P-H3-Image-Comfy |
 | qwen-image-2.1-create-pe-v3-v2 | Image › Create (Qwen-Image 2.1) | 27.09 GB | 7 | Comfy-Org/Qwen-Image-2.1; Comfy-Org/Qwen3-VL; PrunaAI/Pruna-Q-Image-2.1; Qwen/Qwen-Image-2.1-PE-I2I; Qwen/Qwen-Image-2.1-PE-T2I |
 | flux3-klein-sd-edit-v1 | Image › Edit | 20.77 GB | 4 | Comfy-Org/Flux-2-Dev; Comfy-Org/Krea-2; KoalaNation/FLUX-3-KLEIN-MODELS; black-forest-labs/flux-3-image-klein-comfy |
@@ -377,14 +378,23 @@ Only while something you started runs:
 - export jobs (one thread per Deliver export; cancellable from Deliver)
 - control-map extraction jobs (Video controls)
 - voice-take jobs (Audio voice)
+- music-take jobs (Audio music)
 - ComfyUI job watchers (websocket to 127.0.0.1 while a generation you submitted runs)
 - picture-mask jobs (asyncio tasks for a mask you asked for)
 - style-board thumbnail downloads (a small thread pool while a style board you opened has no cached thumbnails)
+- image readiness check (one short thread while the model list is read: it asks ComfyUI which nodes and files it has and waits at most 60 seconds)
+- graphics memory release (one thread, started when Continuo sends work to ComfyUI: every 30 seconds it reads ComfyUI's queue and its newest history entry at the ComfyUI address in use; when nothing has run there for the minutes set under Free graphics memory after, default 10, it asks ComfyUI once to unload its models and free graphics memory, then ends; 0 minutes turns it off)
+- The Hermes mark follows the exact operations Hermes asked for; the page is trusted to use them only for that action, and when the record cannot be read the work is shown as the artist's.
+- picture bring-home: there is no background service. A Jobs list or status call that finds a finished picture fetches it from ComfyUI and publishes it into Media, and normally waits for it. At most 4 fetches or publications run at once in the whole process, and one Jobs call selects at most 4 pictures, oldest eligible owned job first, at most 2 runs per call; jobs already publishing or waiting to retry are skipped, and work over the limit is left for a later look. A run of 200 or more older pending jobs that cannot be read or checked can still hold back later ones. A Jobs list fetch still waiting after 20 seconds is stopped and reported on its Jobs API row as TimeoutError with code collect-deadline; the page shows "Slow to arrive; tried again on the next look" on that job. A status fetch has no deadline. Publication runs on a thread of its own: closing or cancelling the request does not stop a publication already running, it continues and finishes unless it gets stuck. A publication still running after 20 seconds is reported as TimeoutError with code publication-overdue on its Jobs API row when that job is in the listed rows, and the page shows "Still saving into Media" on that job; a stuck publication keeps its slot until Hermes is closed. If Hermes stops after the picture is recorded as ingested, a later Jobs look can finish it without fetching again. If it stops before the ingested ledger record, it may need to be fetched again; if provider output is missing by then, the job is marked failed and the picture is not recovered from the stage; the artist can submit a new run with the same settings
+- video-take line (one thread while video takes wait, a waiting take's predecessor runs or a take's cancel is not yet carried out: starts the next take when ComfyUI is free and follows it until it ends; a thread silent past the deadline is replaced by the next request, and every poll, cancel or Jobs list also recovers stalled takes; ends when nothing is left). Timers only decide when Hermes looks: what happened to a take is decided by what ComfyUI lists under the take's marker. Cleaning up late copies is best effort. A submit whose engine ID was lost is checked while Hermes is running and ComfyUI answers; that can take longer than five minutes. A late submission may start before Hermes sees it; Hermes then tries to stop it. A copy that already finished cannot be undone, and its output stays in ComfyUI. Hermes remembers a given-up take for 24 hours and looks in ComfyUI's queue and its last 100 history entries; a copy outside that can be missed. A later take can reach ComfyUI before an earlier delayed one. While a given-up take is remembered, one more thread looks every 15 seconds, also with no page open, and ends when none is left. Media already uploaded to ComfyUI are not deleted. A synchronous operation that hangs cannot be forcibly stopped in Python; its helper thread can remain until it returns or the process exits, and a cancel it was carrying out is taken over by the next recovery check after one minute. A Stop that got no answer may or may not have been kept: check the take and press Stop again if it still runs. A Hermes process that stops responding entirely needs a restart; the line then continues from where it was.
+
+To tell whether a music or voice take left running belongs to a Hermes that has stopped, Continuo asks the system
+whether that process still runs. It only reads; it never signals or ends a process.
 
 ### Where it keeps data
 
 - your project folders: project.json, script/, state/, pictures/, clips/, sound/, output/ (Deliver) and exports/ (script, picture and previz exports) inside the folder you chose
-- <HERMES_HOME>/plugin-data/film-suite/: recent projects, job databases, image edits, LoRA cache, style thumbnails
+- <HERMES_HOME>/plugin-data/film-suite/: recent projects, job databases with a small owner note per running music or voice take, image edits, LoRA cache, style thumbnails
 - <HERMES_HOME>/cache/film-suite/: staging copies of results before they are published to a project
 - %LOCALAPPDATA%\hermes\film-suite\: this machine's own records (approved folders, who started a job, review decisions, analysis caches, posters); without LOCALAPPDATA on macOS ~/Library/Application Support/hermes/film-suite/, on Linux the temp folder
 - %LOCALAPPDATA%\hermes\film-suite\engines\ (without LOCALAPPDATA on macOS ~/Library/Application Support/hermes/film-suite/engines/, on Linux ~/AppData/Local/hermes/film-suite/engines/): optional analysis engines, only if you install them
@@ -430,7 +440,7 @@ agent. Open issues labelled `help wanted` name what to run, and each states what
 
 | Step | Downloads |
 |:---|:---|
-| Install, enable, export the Sample film | the plugin (23 MB) and its Python packages (511 MB), plus ffmpeg |
+| Install, enable, export the Sample film | the plugin (24 MB) and its Python packages (511 MB), plus ffmpeg |
 | Open Continuo in Hermes Desktop | nothing more |
 | An optional engine | up to 5 GB of model files and 1 to 5 GB for its Python environment; each size is under [Optional analysis engines](#optional-analysis-engines) |
 | A model through ComfyUI | 5 to 46 GB per workflow; each size is under [Models](#models-optional) |

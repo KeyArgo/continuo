@@ -587,7 +587,7 @@ async def _h3_collect_sidecar(row: Any, operation: Any, output_identity: Any) ->
         target = _h3_mctx_module.sidecar_path(published)
         temporary = target.with_name(target.name + ".part")
         temporary.write_bytes(data)
-        os.replace(temporary, target)
+        _win_io.replace(temporary, target)
         update = {"mctx_state": "paired", "mctx": _h3_mctx_module.public_mctx(facts)}
     except Exception:  # noqa: BLE001 - the take stays a plain take; continuation then offers nothing
         update = {"mctx_state": "missing"}

@@ -77,8 +77,7 @@ def evict_analysis_cache(
 def _read_music_cache_only(source: Path) -> dict[str, Any] | None:
     digest, cache_file, proxy_file = _music_cache_paths(source)
     try:
-        with cache_file.open("r", encoding="utf-8") as handle:
-            cached = json.load(handle)
+        cached = json.loads(_win_io.read_text(cache_file, encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     if not music_analysis._is_valid_cache_entry(cached, digest):
@@ -93,8 +92,7 @@ def _read_music_cache_only(source: Path) -> dict[str, Any] | None:
 def _ensure_music_proxy(source: Path, proxy_file: Path) -> Path:
     if proxy_file.is_file() and proxy_file.stat().st_size >= 44:
         try:
-            with proxy_file.open("rb") as handle:
-                header = handle.read(12)
+            header = _win_io.read_bytes(proxy_file, 12)
             if header[:4] == b"RIFF" and header[8:12] == b"WAVE":
                 os.utime(proxy_file, None)
                 return proxy_file
@@ -125,7 +123,7 @@ def _ensure_music_proxy(source: Path, proxy_file: Path) -> Path:
         subprocess.run(command, capture_output=True, text=True, encoding="utf-8", check=True, timeout=600, env=_child_env())
         if not temporary.is_file() or temporary.stat().st_size < 44:
             raise RecipeError("The playback proxy was not created.")
-        os.replace(temporary, proxy_file)
+        _win_io.replace(temporary, proxy_file)
         return proxy_file
     except FileNotFoundError as exc:
         raise RecipeError("The local audio service is unavailable.") from exc

@@ -139,21 +139,146 @@ def _slot_value(graph: Mapping[str, Any], pointer: Any) -> Any:
     return value if type(value) in (str, int, float) else None
 
 
-def slot_compatible(graph: Mapping[str, Any], slot: Mapping[str, Any], live: Any) -> bool:
-    """One manifest slot against the live ``/object_info`` input of its node.
+def _spec_kind(spec: Any) -> str | None:
+    """The ComfyUI input type of a schema entry: ``COMBO`` for a choice list in either shape (``[[...], {}]`` of
+    ComfyUI <= 0.41 nodes or ``["COMBO", {"options": [...]}]`` of V3 nodes), else the type string."""
+    if not isinstance(spec, list) or not spec:
+        return None
+    if isinstance(spec[0], list):
+        return "COMBO"
+    return spec[0] if isinstance(spec[0], str) else None
 
-    A choice list (sampler, scheduler, model file, reference position) needs the value THIS run uses to exist live;
-    the author's whole list is not required (PR #2 by @ShawnCRMer, 8c6ba33: a ComfyUI without RES4LYF has no
-    ``res_6s`` / ``beta57`` and was refused although the run used a stock sampler).  A value the graph does not hold
-    at the slot's pointer fails closed.  A scalar slot (type, bounds) must match its pinned declaration exactly.
+
+def _spec_options(spec: Any) -> list | None:
+    if not isinstance(spec, list) or not spec:
+        return None
+    if isinstance(spec[0], list):
+        return spec[0]
+    meta = spec[1] if len(spec) > 1 and isinstance(spec[1], Mapping) else {}
+    return meta.get("options") if isinstance(meta.get("options"), list) else None
+
+
+def _spec_meta(spec: Any) -> Mapping[str, Any]:
+    return spec[1] if isinstance(spec, list) and len(spec) > 1 and isinstance(spec[1], Mapping) else {}
+
+
+def _is_number(value: Any) -> bool:
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def _on_grid(value: float, base: float, step: float) -> bool:
+    ratio = (value - base) / step
+    return abs(ratio - round(ratio)) <= 1e-6 * max(1.0, abs(ratio))
+
+
+def slot_problem(graph: Mapping[str, Any], slot: Mapping[str, Any], live: Any,
+                 control: Mapping[str, Any] | None = None) -> dict | None:
+    """Why one manifest slot cannot take this run on the live ``/object_info`` input of its node, or None when it fits.
+
+    w45-s1 item 1 (IMG-253): the pinned ``schema`` is a recording of the engine the workflow was made on; what is not
+    ours (step size, tooltip, default, round, display hints) is never compared. A slot fits when every value Continuo
+    can send for it is valid on the live node:
+    - the live input exists with the same type (``missing_input`` / ``type_changed``);
+    - a choice list holds the value THIS run uses (``option_removed``); the author's whole list is not required
+      (PR #2 by @ShawnCRMer, 8c6ba33: a ComfyUI without RES4LYF lacks ``res_6s`` / ``beta57``);
+    - a number: the run's value and the control's whole range (``control``, the descriptor control of the slot) lie
+      inside the live min/max (``range_narrowed``) and on the live step grid when the live node declares one: a live
+      step that is finer than or divides ours fits, a coarser one our values do not land on does not (``off_grid``).
+    A value the graph does not hold at the slot's pointer fails closed (``value_missing``).
+    The answer: {problem, class_type, input, pinned, live} with pinned/live the compared facts, never the whole schema.
     """
     expected = slot["schema"]
-    if not isinstance(live, list) or not live:
-        return False
-    if isinstance(expected[0], list):
-        chosen = _slot_value(graph, slot.get("pointer"))
-        return isinstance(live[0], list) and chosen is not None and chosen in live[0]
-    return live == expected
+    where = {"class_type": slot.get("class_type"), "input": slot.get("input_name")}
+    pinned_kind, live_kind = _spec_kind(expected), _spec_kind(live)
+    if live_kind is None:
+        return {"problem": "missing_input", **where, "pinned": pinned_kind, "live": None}
+    if pinned_kind != live_kind:
+        return {"problem": "type_changed", **where, "pinned": pinned_kind, "live": live_kind}
+    chosen = _slot_value(graph, slot.get("pointer"))
+    if pinned_kind == "COMBO":
+        options = _spec_options(live) or []
+        if chosen is None:
+            return {"problem": "value_missing", **where, "pinned": None, "live": None}
+        return None if chosen in options else {"problem": "option_removed", **where, "pinned": chosen, "live": None}
+    if pinned_kind not in ("INT", "FLOAT"):
+        # STRING / BOOLEAN: the type is the whole contract (the graph's value of that type is valid).
+        return None
+    pinned_meta = _spec_meta(expected)
+    if not isinstance(control, Mapping) or control.get("kind") not in ("number", "integer"):
+        # No descriptor control: what may be sent is unknown beyond the pinned declaration, so its range and step
+        # stand for it (fail closed: a narrowed live range still refuses).
+        control = {"kind": "number", "min": pinned_meta.get("min"), "max": pinned_meta.get("max"), "step": pinned_meta.get("step")}
+    values = [v for v in (chosen,) if _is_number(v) and type(v) is not bool]
+    values += [v for v in (control.get("min"), control.get("max")) if _is_number(v)]
+    if not values:
+        return None
+    meta = _spec_meta(live)
+    low, high = meta.get("min"), meta.get("max")
+    if (_is_number(low) and min(values) < low) or (_is_number(high) and max(values) > high):
+        return {"problem": "range_narrowed", **where, "pinned": [min(values), max(values)],
+                "live": [low if _is_number(low) else None, high if _is_number(high) else None]}
+    step = meta.get("step")
+    if _is_number(step) and step > 0:
+        base = low if _is_number(low) else 0
+        ours = control.get("step") if _is_number(control.get("step")) else None
+        first = control.get("min") if _is_number(control.get("min")) else None
+        if ours is not None and first is not None:
+            # The control's grid (min + k * our step) lands on the live grid: our step is a multiple of the live one
+            # (a finer or dividing live step) and our first value is on the live grid. A free number between grid
+            # points is the artist's value: ComfyUI checks only min/max on submit, so it is never refused here.
+            fits = _on_grid(ours, 0, step) and _on_grid(first, base, step)
+        elif first is not None and pinned_kind == "INT":
+            fits = _on_grid(1, 0, step) and _on_grid(first, base, step)  # every integer from min is sent
+        else:
+            fits = True
+        if not fits:
+            return {"problem": "off_grid", **where, "pinned": ours if ours is not None else chosen, "live": step}
+    return None
+
+
+def slot_compatible(graph: Mapping[str, Any], slot: Mapping[str, Any], live: Any,
+                    control: Mapping[str, Any] | None = None) -> bool:
+    """One manifest slot against the live ``/object_info`` input of its node (``slot_problem`` is None)."""
+    return slot_problem(graph, slot, live, control) is None
+
+
+def schema_sentence(problem: Mapping[str, Any]) -> str:
+    """One stating sentence for a slot problem (refusals name what does not fit, pinned versus live)."""
+    name = f"{problem.get('class_type')}.{problem.get('input')}"
+    kind = problem.get("problem")
+    if kind == "missing_input":
+        return f"{name} is not an input of the running engine's node"
+    if kind == "type_changed":
+        return f"{name} is {problem.get('live')} on the running engine, the workflow sends {problem.get('pinned')}"
+    if kind == "option_removed":
+        return f"{name} does not offer {problem.get('pinned')!r} on the running engine"
+    if kind == "range_narrowed":
+        return f"{name} takes {problem.get('live')[0]} to {problem.get('live')[1]} on the running engine; the workflow sends {problem.get('pinned')[0]} to {problem.get('pinned')[1]}"
+    if kind == "input_required":  # w45-s19 item 1: a required input the running engine added
+        return f"{name} is required on the running engine; the workflow does not send it"
+    if kind == "off_grid":
+        return f"{name} moves in steps of {problem.get('live')} on the running engine; the workflow sends steps of {problem.get('pinned')}"
+    return f"{name} holds no value in the compiled workflow"
+
+
+def slot_problems(graph: Mapping[str, Any], manifest: Mapping[str, Any], object_info: Mapping[str, Any]) -> list[dict]:
+    """Every slot of ``manifest`` that does not fit the live ``object_info`` (classes the engine lacks are reported by
+    the caller as missing classes, not here)."""
+    controls = {c.get("id"): c for c in (manifest.get("descriptor") or {}).get("controls", []) if isinstance(c, Mapping)}
+    found = []
+    for slot in manifest["slots"]:
+        schema = object_info.get(slot["class_type"])
+        if not isinstance(schema, Mapping):
+            continue
+        inputs = schema.get("input") or {}
+        live = (inputs.get(slot["schema_group"]) or {}).get(slot["input_name"])
+        if live is None:  # an input that moved between required and optional is the same input
+            other = "optional" if slot["schema_group"] == "required" else "required"
+            live = (inputs.get(other) or {}).get(slot["input_name"])
+        problem = slot_problem(graph, slot, live, controls.get(slot.get("id")))
+        if problem is not None:
+            found.append(problem)
+    return found
 
 
 def _set_pointer(graph: dict, pointer: str, value: Any) -> None:
@@ -166,7 +291,57 @@ def _set_pointer(graph: dict, pointer: str, value: Any) -> None:
     node[parts[-1]] = copy.deepcopy(value)
 
 
+def control_alias(control: Mapping, value: Any) -> Any:
+    """w45-s1 item 3 (IMG-254): a select value written in its short form is read as the one option it names: ``"3:4"``
+    -> ``"3:4 (Portrait Standard)"`` (the option's leading word, before its label in brackets), or a letter-case
+    variant of one option. Ambiguous or unknown values come back unchanged (and are refused with the accepted list)."""
+    if control.get("kind") != "select" or type(value) is not str or value in control.get("options", ()):
+        return value
+    text = value.strip()
+    hits = [o for o in control.get("options", ()) if isinstance(o, str)
+            and (o.split(" (", 1)[0].strip() == text or o.casefold() == text.casefold())]
+    return hits[0] if len(hits) == 1 else value
+
+
+def canonical_controls(controls: Any, offered: list[Mapping]) -> Any:
+    """``controls`` with every short-form select value replaced by the option it names (see ``control_alias``)."""
+    if type(controls) is not dict:
+        return controls
+    by_id = {c.get("id"): c for c in offered if isinstance(c, Mapping)}
+    return {name: (control_alias(by_id[name], value) if name in by_id else value) for name, value in controls.items()}
+
+
+def _load_refusal_text() -> Any:
+    """studio_core/refusal_text.py by path (lane w45-s19 item 2): the one sanitiser for caller text in a refusal."""
+    path = Path(__file__).resolve().parent.parent / "studio_core" / "refusal_text.py"
+    spec = importlib.util.spec_from_file_location("film_suite_refusal_text_" + Path(__file__).stem, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_refusal_text = _load_refusal_text()
+
+
+def unknown_controls_reason(values: Any, offered: Mapping) -> str:
+    """Lane w45-s19 item 2 (cold review s1-s4 Medium): the refusal for control keys the target does not offer. Every
+    echoed key is the caller's text: one clean line each (control, bidi and zero-width characters become a space),
+    at most 40 characters and 8 keys, so a key such as ``bad\rname`` never puts a control character on the page."""
+    unknown = sorted(set(values) - set(offered)) if type(values) is dict else []
+    shown = [_refusal_text.one_line(key, 40) for key in unknown[:8]]
+    return "controls not offered: " + ", ".join(shown) + (f" and {len(unknown) - 8} more" if len(unknown) > 8 else "")
+
+
+def _refused_control(reason: str, control: Mapping, accepted: Any) -> WorkflowRequestError:
+    error = WorkflowRequestError(reason)
+    error.control = control["id"]
+    error.accepted = accepted
+    return error
+
+
 def _validate_control(control: Mapping, value: Any) -> None:
+    """A refused control names what it takes (w45-s1 item 3, IMG-254): ``accepted`` on the error holds the options
+    of a select, the bounds and step of a number, or the type."""
     kind = control["kind"]
     valid = ((kind == "boolean" and type(value) is bool)
              or (kind == "integer" and type(value) is int)
@@ -174,12 +349,20 @@ def _validate_control(control: Mapping, value: Any) -> None:
              or (kind == "textarea" and type(value) is str and len(value) <= 16384 and "\x00" not in value)
              or (kind == "select" and type(value) is str and value in control["options"]))
     if not valid:
-        raise WorkflowRequestError(f"invalid control: {control['id']}")
+        if kind == "select":
+            raise _refused_control(f"invalid control: {control['id']} takes one of {len(control['options'])} values",
+                                   control, list(control["options"]))
+        if kind in ("number", "integer"):
+            raise _refused_control(f"invalid control: {control['id']} takes a {kind} from {control['min']} to {control['max']}",
+                                   control, {k: control[k] for k in ("kind", "min", "max", "step") if k in control})
+        raise _refused_control(f"invalid control: {control['id']} takes a {kind}", control, {"kind": kind})
     if kind in ("number", "integer"):
+        bounds = {k: control[k] for k in ("kind", "min", "max", "step") if k in control}
         if not control["min"] <= value <= control["max"]:
-            raise WorkflowRequestError(f"control out of range: {control['id']}")
+            raise _refused_control(f"control out of range: {control['id']} takes {control['min']} to {control['max']}", control, bounds)
         if kind == "integer" and (value - control["min"]) % control.get("step", 1):
-            raise WorkflowRequestError(f"control not on grid: {control['id']}")
+            raise _refused_control(f"control not on grid: {control['id']} moves in steps of {control.get('step', 1)} from {control['min']}",
+                                   control, bounds)
 
 
 class QwenImageWorkflowAdapter:
@@ -230,7 +413,7 @@ class QwenImageWorkflowAdapter:
         values = request["controls"]
         offered = {c["id"]: c for c in manifest["descriptor"]["controls"]}
         if type(values) is not dict or set(values) - set(offered):
-            raise WorkflowRequestError("controls not offered")
+            raise _refused_control(unknown_controls_reason(values, offered), {"id": "controls"}, sorted(offered))  # w45-s19 item 2
         effective = {}
         for name, control in offered.items():
             effective[name] = copy.deepcopy(values.get(name, control["default"]))
@@ -367,18 +550,13 @@ class QwenImageWorkflowAdapter:
                     schema_mismatches.append(f"{class_type}.{name}")
                 elif node["inputs"][name] not in options:
                     missing_files.append(node["inputs"][name])
-        for slot in manifest["slots"]:
-            schema = object_info.get(slot["class_type"])
-            if not isinstance(schema, Mapping):
-                continue
-            live = ((schema.get("input") or {}).get(slot["schema_group"]) or {}).get(slot["input_name"])
-            # File/options inventories can grow; scalar types and bounds may
-            # not silently change under a pinned control declaration.
-            if not slot_compatible(graph, slot, live):
-                schema_mismatches.append(f"{slot['class_type']}.{slot['input_name']}")
+        # w45-s1 item 1 (IMG-253): one rule for every slot (qwen_image_workflow_adapter.slot_problems): what this run
+        # sends must be valid live; the recording's step, tooltip or default never refuse.
+        problems = slot_problems(graph, manifest, object_info)
+        schema_mismatches += [f"{p['class_type']}.{p['input']}" for p in problems]
         return {"state": "missing" if missing_classes or missing_files or schema_mismatches else "ready_static",
                 "missing_classes": sorted(set(missing_classes)), "missing_files": sorted(set(missing_files)),
-                "schema_mismatches": sorted(set(schema_mismatches)), "inference_tested": False,
+                "schema_mismatches": sorted(set(schema_mismatches)), "schema_problems": problems, "inference_tested": False,
                 "availability": manifest["descriptor"]["availability"]}
 
     def submit_body(self, request: dict, client_request_id: str) -> dict:

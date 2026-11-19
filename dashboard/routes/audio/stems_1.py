@@ -65,12 +65,12 @@ def _audio_stems_error(exc: BaseException) -> JSONResponse:
     if isinstance(exc, _audio_stems_module.StemsError):
         return JSONResponse(status_code=422, content={"error": {"code": code, "message": str(exc)}})
     if isinstance(exc, _FolderNotApproved):
-        return JSONResponse(status_code=403, content=_folder_refusal())
+        return JSONResponse(status_code=403, content=_folder_refusal(exc))
     if isinstance(exc, RecipeError):
         return JSONResponse(status_code=422, content={"error": {"code": "stems_source_refused", "message": str(exc)}})
     if isinstance(exc, studio_core.ProjectError):
         return JSONResponse(status_code=404 if exc.code == "project_not_found" else 503, content={"error": {"code": exc.code, "message": "The project could not be read"}})
-    return JSONResponse(status_code=503, content={"error": {"code": "stems_unavailable", "message": "Stems are unavailable"}})
+    return _audio_route_fault("stems", exc)
 
 
 def _audio_stems_source(request: AudioStemsRequest) -> tuple[Path, str]:
@@ -159,7 +159,7 @@ def _audio_stems_start_sync(request: AudioStemsRequest) -> dict[str, Any]:
             if job["digest"] == digest and job["split"] == request.split and job["status"] == "running":
                 return _audio_stems_public(job)
         job = {"job_id": f"stm_{uuid.uuid4().hex}", "digest": digest, "split": request.split, "status": "running", "progress": 0.0,
-               "stage": "starting", "stop": False, "result": None, "error": None, "started": time.time()}
+               "stage": "starting", "stop": False, "result": None, "error": None, "started": time.time(), "by": _film_caller()}
         _AUDIO_STEMS_JOBS[job["job_id"]] = job
         for old in sorted(_AUDIO_STEMS_JOBS.values(), key=lambda row: row["started"])[:-_AUDIO_STEMS_KEEP]:
             if old["status"] != "running":
@@ -258,7 +258,7 @@ def _audio_stems_to_media_sync(request: AudioStemsToMediaRequest) -> dict[str, A
         if not out.exists() or out.read_bytes() != data:
             temporary = out.with_name(f".{out.name}.{uuid.uuid4().hex}.tmp")
             temporary.write_bytes(data)
-            os.replace(temporary, out)
+            _win_io.replace(temporary, out)
         added.append({"id": stem["id"], "label": stem["label"], "name": out.name, "item_id": "file:" + hashlib.sha256(data).hexdigest()})
     try:
         film_events.media_changed(f"film_owner:{request.project_ref.project_id}")

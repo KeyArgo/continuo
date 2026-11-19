@@ -126,11 +126,8 @@ async def _v4_submit_route(request: SubmitRequest) -> dict[str, Any]:
                     client=client, client_request_id=request.client_request_id
                 )
                 if _v4_outcome_kind(recovered) == "accepted" and getattr(recovered, "provider_job_id", None):
-                    row = store.bind_provider_job(
-                        studio_job_id=existing.studio_job_id,
-                        provider_job_id=recovered.provider_job_id,
-                        expected_project_id=project_id,
-                    )
+                    # w47-u1 item 1a: one conditional bind; a row given up meanwhile has this copy stopped on the engine.
+                    row = await _v4_bind_or_stop(existing, project_id, recovered.provider_job_id, client)
                     return _receipt_from_job(row)
                 return _receipt_from_job(existing)
             row = _v4_finish_without_job(existing, project_id, "submission_unknown")
@@ -147,8 +144,10 @@ async def _v4_submit_route(request: SubmitRequest) -> dict[str, Any]:
         elif _h3_is_conditioning(request):
             try:
                 h3_prepared = await _h3_prepare_fresh(request)
-            except _h3k_module.H3ControlError as exc:  # the reason names the control and the missing node
-                return {"error": str(exc), "reason_code": exc.reason_code if exc.reason_code in generation.contract.REASON_CODES else "invalid_request"}
+            except _h3k_module.H3ControlError as exc:
+                import logging
+                logging.getLogger(__name__).debug("H3 control refusal: %s", exc.diagnostic.get("detail"))
+                return {"error": exc.diagnostic["message"], "reason_code": exc.reason_code if exc.reason_code in generation.contract.REASON_CODES else "invalid_request"}
             identity_args = h3_prepared["identity"]
             operational_args = dict(request.args)
         elif _h3x_is_continuation(request):
@@ -180,7 +179,7 @@ async def _v4_submit_route(request: SubmitRequest) -> dict[str, Any]:
             request, project_id, identity_args
         )
 
-        studio_job_id = "studio:" + uuid.uuid4().hex
+        studio_job_id = _vq_reserved_for(request.client_request_id) or ("studio:" + uuid.uuid4().hex)  # w46-a: a line take keeps its id
         ops = _private_ops()
         prepared = ops.prepare(
             studio_job_id=studio_job_id,
@@ -194,7 +193,8 @@ async def _v4_submit_route(request: SubmitRequest) -> dict[str, Any]:
         )
         ledgered = False
         try:
-            row = store.create_or_get_v4(
+            # w47-s1 invariant 2: a line take's ledger row is written only while its claim holds (video_line_order_1).
+            row = _vq_fenced_insert(request.client_request_id, lambda: store.create_or_get_v4(
                 studio_job_id=studio_job_id,
                 client_request_id=request.client_request_id,
                 provider_id=request.provider_id,
@@ -204,10 +204,15 @@ async def _v4_submit_route(request: SubmitRequest) -> dict[str, Any]:
                 request_hash=request_hash,
                 destination_identity=prepared.destination_identity,
                 requested_basename=basename,
-            )
+            ))
             operation = ops.mark_ledgered(prepared, row)
             ledgered = True
             ops.mark_submit_started(operation)
+        except _VQFenced as fence:
+            ops.abort_prepared(prepared)
+            if fence.busy:  # the line store was busy: nothing written or sent; the starter gives the take back
+                return _vq_busy_answer()
+            return {"fenced": True, "details": None, "reason_code": None}  # nothing written, nothing sent
         except BaseException:
             if not ledgered:
                 ops.abort_prepared(prepared)
@@ -217,15 +222,27 @@ async def _v4_submit_route(request: SubmitRequest) -> dict[str, Any]:
             profile, graph = _comfy_assets(request.target_id)
             manifest = profile.manifest if hasattr(profile, "manifest") else profile
             if manifest.get("id") != request.target_id:
-                return _v4_finish_receipt_failure(row, project_id, "invalid_request", operation)
+                return _v4_failed_receipt(row, project_id, "invalid_request", operation,
+                                          f"The workflow loaded for {request.target_id} is {manifest.get('id')}")
             client = _comfy_client_module.ComfyUIClient()
             health = await _comfy_static_health(client=client, manifest=manifest, graph=graph)
             if health.provider_id != request.provider_id or health.target_id != request.target_id:
-                return _v4_finish_receipt_failure(row, project_id, "invalid_request", operation)
+                return _v4_failed_receipt(row, project_id, "invalid_request", operation,
+                                          f"The engine check answered for {health.target_id}, not {request.target_id}")
             if health.state != "ready_static":
-                return _v4_finish_receipt_failure(
-                    row, project_id, health.reason_code or "unverified_runtime", operation
-                )
+                if health.state == "unverified_runtime":
+                    # w45-s7 item 2: the same facts and sentence as /generation/health (comfy_catalog_1.py), from one
+                    # GET /system_stats on this refusal only; an engine that does not answer keeps the plain reason.
+                    try:
+                        facts, sentence = _comfy_provider_module.runtime_policy.unverified_facts(manifest, await client.system_stats())
+                    except Exception:  # noqa: BLE001 - the refusal stands without its detail
+                        facts = sentence = None
+                    if sentence:
+                        refused = _v4_failed_receipt(row, project_id, "unverified_runtime", operation, sentence)
+                        refused.update(reason_text=sentence, runtime_facts=facts)
+                        return refused
+                return _v4_failed_receipt(row, project_id, health.reason_code or "unverified_runtime", operation,
+                                          _v4_health_sentence(health))
             _h3_note_runtime(row, health)
             compiled_graph = None
             if h3_prepared is not None:
@@ -243,13 +260,13 @@ async def _v4_submit_route(request: SubmitRequest) -> dict[str, Any]:
                         compiled = await _h3_upload_and_compile(manifest, graph, request, h3_prepared)
                 except (_h3m_module.H3MediaError, _h3c_module.H3ConditioningError) as exc:
                     _job_cause_note(row.studio_job_id, str(exc))  # lane w11-backend M-35: the failed job keeps why
-                    return _v4_finish_receipt_failure(row, project_id, "invalid_request", operation)
+                    return _v4_failed_receipt(row, project_id, "invalid_request", operation, str(exc))
                 except (_h3x_module.H3ContinuationError, _h3f_module.H3FinishError, _vsr_module.VideoUpscaleError) as exc:
                     _job_cause_note(row.studio_job_id, str(exc))
                     reason = exc.reason_code if exc.reason_code in generation.contract.REASON_CODES else "invalid_request"
                     return _receipt_from_job(_v4_finish_receipt_failure(row, project_id, reason, operation))
                 except Exception:  # noqa: BLE001 - the temp upload did not reach ComfyUI
-                    return _v4_finish_receipt_failure(row, project_id, "unreachable", operation)
+                    return _v4_failed_receipt(row, project_id, "unreachable", operation, _v4_upload_sentence())
                 compiled_graph = compiled["graph"]
                 facts_update = {
                     "effective_frames": compiled["effective_frames"],
@@ -268,6 +285,13 @@ async def _v4_submit_route(request: SubmitRequest) -> dict[str, Any]:
                                         **({"source_motion_activity": h3_prepared["source_motion"]}
                                            if h3_prepared.get("source_motion") is not None else {}))
                 _h3m_module.merge_take_facts(_h3_facts_root(), row.studio_job_id, facts_update)
+            # w47-t1 item 1 (cr50 H7): send and give-up are exclusive on the ledger row. One compare-and-set moves it
+            # submitting -> sending (queued, no prompt id yet); a row a cancel or the lost-submit rule already ended
+            # is not sent: its private operation is released and its own state answers.
+            sending, current = _v4_cas_unsent(row, project_id, "sending")
+            if not sending:
+                return _receipt_from_job(current)
+            row = current
             outcome = await _comfy_provider_module.comfy_submit_v4(
                 client=client,
                 manifest=manifest,
@@ -286,7 +310,7 @@ async def _v4_submit_route(request: SubmitRequest) -> dict[str, Any]:
                 )
                 problem = flux3_provider.validate(mode, prepared_args)
                 if problem:
-                    return _v4_finish_receipt_failure(row, project_id, "invalid_request", operation)
+                    return _v4_failed_receipt(row, project_id, "invalid_request", operation, str(problem))
                 outcome = await flux3_provider.submit_managed(
                     mode=mode,
                     args=prepared_args,
@@ -301,15 +325,28 @@ async def _v4_submit_route(request: SubmitRequest) -> dict[str, Any]:
                             pass
 
         if _v4_outcome_kind(outcome) == "accepted" and getattr(outcome, "provider_job_id", None):
-            row = store.bind_provider_job(
-                studio_job_id=row.studio_job_id,
-                provider_job_id=outcome.provider_job_id,
-                expected_project_id=project_id,
-            )
+            if request.provider_id == "comfyui-local":
+                # w47-u1 item 1a (cr51 H11): the prompt id is bound by ONE conditional move (only a row still sending);
+                # a row given up or cancelled while this sender was held has its late prompt cancelled here, at once.
+                row = await _v4_uncancellable(_v4_bind_or_stop(row, project_id, outcome.provider_job_id, client))
+                if row.provider_job_id != outcome.provider_job_id:
+                    return _receipt_from_job(row)
+            else:
+                row = store.bind_provider_job(
+                    studio_job_id=row.studio_job_id,
+                    provider_job_id=outcome.provider_job_id,
+                    expected_project_id=project_id,
+                )
             ops.mark_submit_result(operation, row)
             return _receipt_from_job(row)
         if request.provider_id == "comfyui-local" and _v4_outcome_kind(outcome) == "transport_error":
             return _receipt_from_job(row)
+        if request.provider_id == "comfyui-local":
+            # w47-u1 item 1b: a row past its CAS (sending) ends only through its tombstone: an answer that could not be
+            # read may still hide an accepted prompt, which a later look by marker stops.
+            refused = _v4_outcome_kind(outcome) == "refused"
+            reason = _v4_status_reason(outcome, "provider_refused" if refused else "submission_unknown")
+            return _receipt_from_job(_v4_give_up_sending(row, reason, None, tomb=not refused))
         reason = _v4_status_reason(
             outcome,
             "provider_refused" if _v4_outcome_kind(outcome) == "refused" else "submission_unknown",
@@ -456,10 +493,98 @@ async def _v4_submit_route(request: SubmitRequest) -> dict[str, Any]:  # noqa: F
     if owned:
         _V4_SUBMITS_IN_FLIGHT.add(crid)
     try:
-        return await _v4_submit_route_before_flight(request)
+        if getattr(request, "provider_id", None) != "comfyui-local":
+            return await _v4_submit_route_before_flight(request)
+        # w47-t1 item 1 (cr50 H7): a local submit runs from its ledger insert to its POST under a hard bound, far
+        # below the lost-submit limit; past it the row is given up by the same compare-and-set as every give-up.
+        try:
+            return await asyncio.wait_for(_v4_submit_route_before_flight(request), float(V4_LOCAL_SUBMIT_TIMEOUT_SECONDS))
+        except asyncio.TimeoutError:
+            return _v4_submit_timed_out(request)
     finally:
         if owned:
             _V4_SUBMITS_IN_FLIGHT.discard(crid)
+
+
+V4_LOCAL_SUBMIT_TIMEOUT_SECONDS = 120.0
+V4_SUBMIT_TIMEOUT_CAUSE = "ComfyUI did not take the take within two minutes, so it was not sent."
+V4_SUBMIT_UNREAD_CAUSE = ("The submit gave no answer within two minutes, and Hermes could not read whether ComfyUI took it."
+                          " Poll the take or retry with the same request id; it is never sent twice.")
+
+
+def _v4_cas_unsent(row: Any, project_id: str | None, to: str, reason: str | None = None) -> tuple[bool, Any]:
+    """w47-t1 item 1: the ledger's compare-and-set of a submit not yet handed to ComfyUI (job_store.cas_unsent_v4);
+    a give-up that won releases the row's private operation."""
+    moved, current = _comfy_store().cas_unsent_v4(studio_job_id=row.studio_job_id, expected_project_id=project_id,
+                                                  to=to, reason_code=reason)
+    if current.is_terminal:  # ended (by this give-up or an earlier one): its private operation is released
+        try:
+            _private_ops().release_terminal_without_output(_private_ops().load_for_job(current), current.state)
+        except Exception:  # noqa: BLE001 - the ledger row decides; a private record left behind names an ended row
+            pass
+    return moved, current
+
+
+async def _v4_uncancellable(awaitable: Any) -> Any:
+    """w47-u1: run ``awaitable`` to its end even when the request is cancelled meanwhile (the cancellation is raised
+    after it). Used where a step must not be separated from its effect: the bind-or-stop after a POST."""
+    task = asyncio.ensure_future(awaitable)
+    cancelled = False
+    while True:
+        try:
+            result = await asyncio.shield(task)
+            break
+        except asyncio.CancelledError:
+            if task.done():
+                raise
+            cancelled = True
+    if cancelled:
+        raise asyncio.CancelledError()
+    return result
+
+
+def _v4_give_up_sending(row: Any, reason: str, cause: str | None, to: str = "failed", tomb: bool = True) -> Any:
+    """w47-u1 item 1b (cr51 H11): the one way a sending row (handed to ComfyUI, no prompt id) ends: its durable
+    tombstone (marker, job id, time) is written FIRST, then one conditional ledger move ends it only while it is still
+    sending. No tombstone (a busy store): nothing ends. Best effort (w47-v1): Hermes tries to stop a late copy of the
+    take on the engine by the tombstone pass (video_line_engine_1) or by its own sender (_v4_bind_or_stop); a copy that
+    already finished cannot be undone. Answers the row as it is now."""
+    try:
+        if tomb:  # tomb=False only for ComfyUI's own refusal of this POST (nothing was accepted: nothing to look for)
+            _vq_tomb_write(row.client_request_id, row.studio_job_id)
+    except Exception:  # noqa: BLE001 - without its tombstone the row is not ended; the next pass tries again
+        return row
+    moved, current = _comfy_store().give_up_sending_v4(studio_job_id=row.studio_job_id, expected_project_id=row.project_id,
+                                                       to=to, reason_code=reason)
+    if moved:
+        try:
+            _private_ops().release_terminal_without_output(_private_ops().load_for_job(current), current.state)
+        except Exception:  # noqa: BLE001 - the ledger row decides
+            pass
+        if cause:
+            _job_cause_note(row.studio_job_id, cause)
+    elif current.provider_job_id is not None:
+        _vq_tomb_drop(row.client_request_id)  # it was bound meanwhile: its own prompt, nothing to look for
+    return current
+
+
+def _v4_submit_timed_out(request: SubmitRequest) -> dict[str, Any]:
+    """The bound passed: a row still submitting ends failed (never sent); a row already sending is the lost-submit
+    rule's (its prompt is looked up by its marker); no row: nothing was written or sent. w47-v1 (cr61 H14): a ledger
+    that cannot be read is not "no row": the answer says the outcome is not known and claims nothing was sent."""
+    try:
+        row = _read_client_row(request.client_request_id)
+    except Exception:  # noqa: BLE001 - unreadable is not missing: nothing is decided or claimed
+        return {"error": f"Generation submission failed: {V4_SUBMIT_UNREAD_CAUSE}", "reason_code": "unreachable",
+                "reason_text": V4_SUBMIT_UNREAD_CAUSE, "details": None}
+    if row is None:
+        return {"error": f"Generation submission failed: {V4_SUBMIT_TIMEOUT_CAUSE}", "reason_code": "unreachable",
+                "reason_text": V4_SUBMIT_TIMEOUT_CAUSE, "details": None}
+    moved, current = _v4_cas_unsent(row, row.project_id, "failed", "unreachable")
+    if moved:
+        _job_cause_note(row.studio_job_id, V4_SUBMIT_TIMEOUT_CAUSE)
+        return {**_receipt_from_job(current), "reason_text": V4_SUBMIT_TIMEOUT_CAUSE}
+    return _receipt_from_job(current)
 
 
 # Lane w35-ui-3 (critic run 3 #19): a refused path names itself and its side. A Frames take whose keyframe lay outside the
@@ -510,3 +635,31 @@ def _v4_exception(exc: BaseException, *, prefix: str | None = None) -> dict[str,
     full = f"{sentence} ({side}: {path})"
     return {"error": f"{prefix}: {full}" if prefix else full, "reason_code": code, "reason_text": sentence,
             "refused_side": side, "refused_path": path}
+
+
+# Lane w45-s4 item 1 (release run finding 1): every failed /submit return is the receipt of its failed row with the
+# cause as reason_text (the page's line, the Jobs cause, Hermes' data). Five returns handed back the raw JobRecord;
+# /submit then answered HTTP 500 and Hermes read agent_backend_unavailable.
+def _v4_failed_receipt(row: Any, project_id: str | None, reason: str, operation: Any, text: str | None) -> dict[str, Any]:
+    receipt = _receipt_from_job(_v4_finish_receipt_failure(row, project_id, reason, operation))
+    cause = _job_cause_text(text) if text else None
+    if cause:
+        _job_cause_note(row.studio_job_id, cause)
+    if not receipt.get("reason_text"):
+        receipt["reason_text"] = cause or generation.contract.public_reason(reason)
+    return receipt
+
+
+def _v4_health_sentence(health: Any) -> str:
+    """The engine check's answer as one fact: its reason and the node class/input it names."""
+    text = generation.contract.public_reason(getattr(health, "reason_code", None) or "unverified_runtime")
+    detail = getattr(health, "reason_detail", None)
+    return f"{text}: {detail}" if detail else text
+
+
+def _v4_upload_sentence() -> str:
+    try:
+        address = _comfy_endpoint_module.comfy_label()
+    except Exception:  # noqa: BLE001 - an invalid address setting: the address stays unnamed
+        address = None
+    return f"The input upload to ComfyUI at {address} did not complete" if address else "The input upload to ComfyUI did not complete"

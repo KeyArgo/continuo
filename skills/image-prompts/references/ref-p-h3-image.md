@@ -35,7 +35,8 @@ ComfyUI node and encoder that run it · `[community]` = dated practitioner repor
   to 16,384 characters, but that is a server limit, not a target length.
 - Encoding `[local]`: raw tokens with no chat template and no special tokens. Prompt weights are switched off, so
   `(word:1.3)` reaches the model as literal characters. There is no negative prompt and no CFG.
-- Controls: `seed`, `aspect_ratio` (1:1, 2:3, 3:2, 3:4, 4:3, 9:16, **16:9 default**, 21:9), `megapixels` 1–16
+- Controls: `seed`, `aspect_ratio` (1:1, 2:3, 3:2, 3:4, 4:3, 9:16, **16:9 default**, 21:9; the option label is
+  `"3:4 (Portrait Standard)"`, and the short form `"3:4"` names the same option `[code]`), `megapixels` 1–16
   (**default 8**), `lora_strength` 0–2 (default 1.0), `steps` 4–16 (default 8), `sampler` (default `euler`). The
   job returns the effective prompt, so read it back to check what the model got.
 

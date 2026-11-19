@@ -53,7 +53,7 @@ def _timeline_export_store_ok(project_id: str, directory: Any) -> bool:
     """Lane w22-cut (CUT-176): a project's queue store is bound only inside its existing folder whose manifest names it
     (a moved-away folder is never recreated by a poll, Deliver or a job lookup; Resolve marks it offline)."""
     try:
-        manifest = json.loads((Path(directory) / "project.json").read_text(encoding="utf-8"))
+        manifest = json.loads(_win_io.read_text(Path(directory) / "project.json", encoding="utf-8"))
     except (OSError, ValueError, TypeError):
         return False
     return isinstance(manifest, dict) and manifest.get("project_id") == project_id
@@ -178,7 +178,7 @@ def _timeline_export_song_links(online: dict[str, str]) -> tuple[dict[str, Path]
         if proxy.suffix != ".wav" or proxy.stem != sha or proxy.parent.name != "analysis" or not re.fullmatch(r"[0-9a-f]{64}", sha):
             continue
         try:
-            entry = json.loads(proxy.with_suffix(".json").read_text(encoding="utf-8"))
+            entry = json.loads(_win_io.read_text(proxy.with_suffix(".json"), encoding="utf-8"))
             source = Path(entry["source_path"])
         except (OSError, ValueError, KeyError, TypeError):
             continue

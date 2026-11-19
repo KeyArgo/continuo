@@ -70,6 +70,8 @@ def _enter_at(item: dict[str, Any], frame: int, rate: dict[str, int]) -> None:
         _ops.fail("out_of_range", f"{item['id']} would be shorter than one frame")
     if frame != item["source_in_frame"]:
         item["anchors"]["in"] = None
+    from .ops_frame import shift_part
+    shift_part(item, item["duration_frames"] - duration)  # lane w47-p3: the in edge moved inside a split move
     item["source_in_frame"] = frame
     item["duration_frames"] = duration
 

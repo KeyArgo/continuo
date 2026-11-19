@@ -53,8 +53,8 @@ def _use_in_cut_song_from_path(request: UseInCutRequest) -> UseInCutSong | dict[
     try:
         roots = _request_roots([], request.project_ref, path=request.path, server_list=True)
         opened = _music_open_sync(request.path, roots, None, None, request.project_ref)
-    except _FolderNotApproved:
-        return _use_in_cut_error("outside_roots", "The file is outside the project's folders.")
+    except _FolderNotApproved as exc:  # w45-s10 item 3: the refusal names the folder and the artist's way
+        return _use_in_cut_error("outside_roots", "The file is outside the project's folders. " + _folder_refusal(exc)["message"])
     except Exception:  # noqa: BLE001 - not a readable sound file
         return _use_in_cut_error("use_in_cut_invalid", "The sound file could not be read.")
     if not opened.get("analysed") or not opened.get("map_id"):

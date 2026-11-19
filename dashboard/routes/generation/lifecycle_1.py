@@ -106,10 +106,10 @@ async def _v4_poll_route(request: PollRequest, looked_up: Any) -> dict[str, Any]
                 row = _v4_finish_without_job(row, row.project_id, "submission_unknown")
             if (
                 row.provider_id == "comfyui-local"
-                and row.state == "submitting"
+                and row.state in ("submitting", "queued")
                 and row.client_request_id not in _V4_SUBMITS_IN_FLIGHT
             ):
-                return await _v4_recover_lost_submit(row)  # lane w33-rel2 item 2 (VID-169)
+                return await _v4_recover_lost_submit(row)  # lane w33-rel2 item 2 (VID-169); w47-t1: also sending
             return _receipt_from_job(row)
         if row.provider_id == "comfyui-local":
             profile, _graph = _comfy_assets(row.target_id)
@@ -235,8 +235,8 @@ async def submit(request: SubmitRequest) -> dict[str, Any]:
         return result
     try:  # lane p5-prj: approved folders come from the server; Hermes naming another folder is refused
         _request_roots(request.approved_roots, request.project_ref)
-    except _FolderNotApproved:
-        return _folder_refusal()
+    except _FolderNotApproved as exc:
+        return _folder_refusal(exc)
     if request.provider_id is not None or request.schema == "studio.generation-request/1":
         request = _submit_normalised(request)
         result = await _v4_submit_route(request)
@@ -418,8 +418,10 @@ async def _cancel_route(request: CancelRequest) -> dict[str, Any]:
 # network failure (Stripe, S3 multipart): look the request up, never send it twice.
 V4_LOST_SUBMIT_GRACE_SECONDS = 20.0
 V4_LOST_SUBMIT_LIMIT_SECONDS = 300.0
-V4_LOST_SUBMIT_CAUSE = ("The answer to this submit was lost and ComfyUI does not list the take in its queue or history, "
-                        "so it was not made.")
+# w47-u1 item 1c: only what is known. Not listed is not proof that it was never made: a held sender may still post it.
+# w47-v1 (cr61 H15): stopping such a late copy is best effort; a copy that already finished stays.
+V4_LOST_SUBMIT_CAUSE = ("ComfyUI did not list the take. If it starts there later, Hermes tries to stop it; a copy that already"
+                        " finished cannot be undone.")
 
 
 async def _v4_recover_lost_submit(row: Any) -> dict[str, Any]:
@@ -427,18 +429,24 @@ async def _v4_recover_lost_submit(row: Any) -> dict[str, Any]:
     age = time.time() - float(stamp) if isinstance(stamp, (int, float)) else V4_LOST_SUBMIT_LIMIT_SECONDS
     if age < V4_LOST_SUBMIT_GRACE_SECONDS:
         return _receipt_from_job(row)
-    recovered = await _comfy_provider_module.comfy_recover_submit_v4(
-        client=_comfy_client_module.ComfyUIClient(), client_request_id=row.client_request_id
-    )
+    client = _comfy_client_module.ComfyUIClient()
+    recovered = await _comfy_provider_module.comfy_recover_submit_v4(client=client, client_request_id=row.client_request_id)
     if _v4_outcome_kind(recovered) == "accepted" and getattr(recovered, "provider_job_id", None):
-        bound = _comfy_store().bind_provider_job(
-            studio_job_id=row.studio_job_id,
-            provider_job_id=recovered.provider_job_id,
-            expected_project_id=row.project_id,
-        )
-        return _receipt_from_job(bound)
-    if age < V4_LOST_SUBMIT_LIMIT_SECONDS:
-        return _receipt_from_job(row)
-    failed = _v4_finish_without_job(row, row.project_id, "submission_unknown")
+        return _receipt_from_job(await _v4_bind_or_stop(row, row.project_id, recovered.provider_job_id, client))
+    if age < V4_LOST_SUBMIT_LIMIT_SECONDS or _v4_outcome_kind(recovered) == "transport_error":
+        return _receipt_from_job(row)  # w47-u1: the engine did not answer the marker lookup: nothing is decided
+    # w47-t1 item 1 (cr50 H7): a row still submitting was never handed to ComfyUI: one compare-and-set ends it, and a
+    # sender that comes later finds it ended and sends nothing.
+    # w47-u1 item 1b/1d (cr51 H11): a row already sending (queued without a prompt id) may have been POSTed, or may
+    # still be by a held sender: no timer proves that sender dead. It ends only with its durable tombstone, so a late
+    # copy is looked for on the engine (by its own sender, or by the tombstone pass of any process within 24 hours).
+    if row.state == "submitting":
+        moved, failed = _v4_cas_unsent(row, row.project_id, "failed", "submission_unknown")
+        if not moved:
+            return _receipt_from_job(failed)
+    else:
+        failed = _v4_give_up_sending(row, "submission_unknown", None)
+        if not failed.is_terminal or failed.reason_code != "submission_unknown":
+            return _receipt_from_job(failed)
     _job_cause_note(row.studio_job_id, V4_LOST_SUBMIT_CAUSE)
     return {**_receipt_from_job(failed), "reason_text": V4_LOST_SUBMIT_CAUSE}

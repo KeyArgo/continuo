@@ -31,7 +31,8 @@ child, as FCPXML 1.9 requires (``<!ELEMENT asset (media-rep+, metadata?)>``;
   ``frame-blending``, flow = ``optical-flow``; a speed curve / hold (lane w7-export) is the same
   timeMap with its points exact at every record frame (``curve_map``);
 - fill / stretch: ``<adjust-conform type="fill">`` / fit + ``<adjust-transform scale>`` that turns
-  the fit into the stretch (FCPXML has no stretch conform);
+  the fit into the stretch (FCPXML has no stretch conform); a clip's own ``frame.fit`` (lane w46-d) is written the
+  same way for that clip; its zoom, position and move are not written (export_package.frame_warnings names them);
 - a V1 transition is a spine ``<transition>`` at the cut minus its part before the cut, with the
   Cross Dissolve effect (FxPlug 4731E73A...). FCPXML has no standard dip: a dip is written as that
   dissolve named "Dip to Black" / "Dip to White" (README says so).
@@ -451,9 +452,10 @@ def _picture_params(clip: PlanClip, asset: AssetRef, plan: Plan) -> list[str]:
     out: list[str] = []
     if clip.retime is not None and asset.rate is not None:
         out.append(time_map(clip, asset, plan.rate))
-    if plan.fit == "fill":
+    fit = (clip.frame or {}).get("fit") or plan.fit  # lane w46-d: a clip's own fit (its zoom/position/move: package warning)
+    if fit == "fill":
         out.append('<adjust-conform type="fill"/>')
-    elif plan.fit == "stretch" and clip.info is not None and clip.info.width and clip.info.height:
+    elif fit == "stretch" and clip.info is not None and clip.info.width and clip.info.height:
         w, h = clip.info.width, clip.info.height
         fit = min(Fraction(plan.width, w), Fraction(plan.height, h))
         sx, sy = Fraction(plan.width, w) / fit, Fraction(plan.height, h) / fit

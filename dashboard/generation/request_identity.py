@@ -42,6 +42,20 @@ def _load_h3_megapixels():
 H3_MP = _load_h3_megapixels()
 
 
+def _load_refusal_text() -> Any:
+    """studio_core/refusal_text.py by path (lane w45-s11 item 3): the one sanitiser for caller text in a refusal."""
+    import importlib.util as _importlib_util
+    from pathlib import Path as _Path
+    path = _Path(__file__).resolve().parent.parent / "studio_core" / "refusal_text.py"
+    spec = _importlib_util.spec_from_file_location("film_suite_refusal_text_" + _Path(__file__).stem, path)
+    module = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_refusal_text = _load_refusal_text()
+
+
 GENERATION_REQUEST_SCHEMA = "studio.generation-request/1"
 PROFILE_KEY_SIZE = 32
 MAX_DURABLE_REQUEST_BYTES = 1024 * 1024
@@ -566,11 +580,11 @@ def _validate_durable_payload(payload: dict[str, Any]) -> None:
     if set(args) & _H3_MEDIA_KEYS:
         raise _invalid("request_json args carry H3 media for a target without media roles")
     if set(args) - _DURABLE_ARG_KEYS:
-        raise _invalid("request_json.args contains an unknown or private field")
+        raise _invalid(f"request_json.args contains an unknown or private field: {', '.join(sorted(_refusal_text.one_line(k, 40) for k in set(args) - _DURABLE_ARG_KEYS)[:8])}")
     if payload["target_id"] == "minimax-h3-t2v" and set(args) & _COMFY_H3_V2_KEYS:
         raise _invalid("request_json v1 args contain a v2 sampling field")
     if payload["target_id"] == "minimax-h3-t2v-sampling-v2" and not _COMFY_H3_V2_KEYS <= set(args):
-        raise _invalid("request_json v2 args are missing sampling fields")
+        raise _invalid(f"request_json v2 args are missing sampling fields: {', '.join(sorted(_COMFY_H3_V2_KEYS - set(args)))}")
     if payload["target_id"] == "minimax-h3-t2v-sampling-v2" and set(args) != COMFY_H3_KEYS | _COMFY_H3_V2_KEYS:
         raise _invalid("request_json v2 args do not match the frozen allowlist")
     if set(args) & _COMFY_H3_V2_KEYS and payload["target_id"] != "minimax-h3-t2v-sampling-v2":
@@ -723,7 +737,7 @@ def _h3_conditioning_args(args: Any, target_id: str) -> dict[str, Any]:
     if not isinstance(args, Mapping):
         raise _invalid("args must be an object")
     allowed = (COMFY_H3_KEYS | _COMFY_H3_V2_KEYS | H3_CONDITIONING_MEDIA_KEYS[target_id] | _H3_CAMERA_IDENTITY_KEYS
-               | _H3_CONTROL_IDENTITY_KEYS | {"loras"})
+               | _H3_CONTROL_IDENTITY_KEYS | {"loras", "passes", "sigmas"})
     names = _safe_mapping_keys(args, "args")
     if any(type(name) is not str or name not in allowed for name in names):
         raise _invalid("H3 args contain an unknown key")
@@ -775,6 +789,15 @@ def _h3_conditioning_args(args: Any, target_id: str) -> dict[str, Any]:
                     or type(item["strength"]) not in (int, float) or not math.isfinite(item["strength"]) for item in value):
                 raise _invalid("args.loras must list {file, strength}")
             result[name] = [{"file": item["file"], "strength": item["strength"]} for item in value]
+        elif name == "sigmas":  # w46-b: the drawn curve; the shape rules are h3_controls.normalize_sigmas
+            if type(value) is not list or len(value) > 101:
+                raise _invalid("args.sigmas must list at most 101 numbers")
+            result[name] = [_scalar(item, f"args.sigmas[{i}]") for i, item in enumerate(value)]
+        elif name == "passes":  # w46-b: custom passes; the shape rules are h3_controls.normalize_passes
+            if type(value) is not list or len(value) > 4 or any(type(item) is not dict or any(type(k) is not str for k in item)
+                                                                for item in value):
+                raise _invalid("args.passes must list {steps, sampler, noise}")
+            result[name] = [{k: _scalar(v, f"args.passes[{i}].{k}") for k, v in sorted(item.items())} for i, item in enumerate(value)]
         else:
             result[name] = _scalar(value, f"args.{name}")
     return result

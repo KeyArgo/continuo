@@ -74,6 +74,9 @@ ERRORS: dict[str, tuple[bool, str]] = {
     "nest_empty": (False, "The cut has no item to place."),
     "last_cut": (False, "The project keeps at least one cut."),
     "cut_in_use": (False, "Another cut holds this cut as a nested clip."),
+    # lane w46-d (issue #4): set_frame frames V1 picture clips; V2 (picture-in-picture) and nested cuts have none yet.
+    "not_framable": (False, "Framing is for take, picture and footage clips on V1."),
+    "speed_curve": (False, "Adjust the speed keys or the clip before this edit."),
 }
 
 
@@ -136,7 +139,7 @@ def check(value: Any, project_id: str) -> dict[str, Any]:
         fail("invalid_timeline", "envelope.by: must be artist or hermes")
     validate_state(value["state"])
     if value["schema"] == SCHEMA and uses_1_1(value["state"]):
-        fail("invalid_timeline", f"envelope.schema: a cut with retimed clips, transitions or stretch is {SCHEMA_1_1}")
+        fail("invalid_timeline", f"envelope.schema: a cut with retimed clips, transitions, stretch or framed clips is {SCHEMA_1_1}")
     return value
 
 

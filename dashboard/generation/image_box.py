@@ -22,6 +22,12 @@ FLUX.3 Klein reads boxes itself (Black Forest Labs' edit layout, as NKD
 Every other edit model takes a mask: ``box_mask`` rasterises the changing boxes
 (feathered like the Suite's measured edit masks), cuts Keep boxes out hard and
 refuses Move (a mask cannot carry a thing to a new place).
+
+Provenance (BCK-237): ``to_grid``, ``sentence`` and ``compile_prompt`` follow the box prompt
+code of Nekodificador's ComfyUI-NKD-Klein-Tools 1.13.2, commit a9cc507b (2026-10-20),
+``box_prompt.py`` ``_px_box``, ``_mention`` and ``_emit``, written here on 2026-10-22 (e4c378f6)
+while that version was MIT licensed (Copyright (c) 2025 Nekodificador). The project moved to
+GPL-3.0 in fd1dd416 (2026-10-29, released in 1.13.3); nothing here comes from that or a later version.
 """
 from __future__ import annotations
 
@@ -47,10 +53,11 @@ REGION_GROW_FRACTION = 0.04
 class BoxError(ValueError):
     """A finite, user-facing refusal with a stable code (HTTP 422 at the route)."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, hint: str | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.hint = hint  # w45-s11 item 4: the agent's guidance beside the artist's message
 
 
 def _rect(value: Any, name: str, size: tuple[int, int] | None) -> list[int]:
@@ -71,7 +78,7 @@ def normalize_boxes(raw: Any, size: tuple[int, int] | None = None) -> list[dict[
     out, seen = [], set()
     for index, item in enumerate(raw, 1):
         if not isinstance(item, Mapping):
-            raise BoxError("invalid_box", f"Box {index} is invalid")
+            raise BoxError("invalid_box", f"Box {index} is not readable", hint=f"boxes[{index - 1}] is an object {{id, intent, desc, bbox, target_bbox?}}")
         box_id, intent, desc = item.get("id"), item.get("intent"), item.get("desc", "")
         if not isinstance(box_id, str) or not _ID.match(box_id):
             raise BoxError("invalid_box", f"Box {index}: the id must be letters, digits and underscores (up to {ID_MAX}), not starting with a digit")

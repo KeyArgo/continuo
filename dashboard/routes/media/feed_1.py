@@ -550,7 +550,7 @@ def _project_take(studio_job_id: str, project_id: str) -> Any:
         if (row.get("status") != "ready" or not Path(saved).is_absolute() or not path.is_file() or not any(path.is_relative_to(r) for r in roots)
                 or not recipe.is_file() or recipe.stat().st_size > _PROJECT_TAKE_RECIPE_MAX):
             raise missing()
-        named = json.loads(recipe.read_text(encoding="utf-8"))
+        named = json.loads(_win_io.read_text(recipe, encoding="utf-8"))
         if not isinstance(named, dict) or named.get("job_id") != studio_job_id or not _take_sidecar_ok(path):
             raise missing()
     except Exception:  # noqa: BLE001 - unreadable file, recipe or sidecar, or refused: unknown
@@ -582,7 +582,7 @@ def _recipe_take(studio_job_id: str, project_id: str, roots: list[Path]) -> Any:
             recipe, path = (root / name).resolve(strict=True), (root / (name[:-11] + ".mp4")).resolve(strict=True)
             if {recipe.parent, path.parent} != {root} or not path.is_file() or recipe.stat().st_size > _PROJECT_TAKE_RECIPE_MAX:
                 continue
-            shas, stack = set(), [named := json.loads(recipe.read_text(encoding="utf-8"))]
+            shas, stack = set(), [named := json.loads(_win_io.read_text(recipe, encoding="utf-8"))]
             while stack:  # published_file_sha256 sits somewhere in the document
                 node = stack.pop()
                 shas |= {node["published_file_sha256"]} if isinstance(node, dict) and isinstance(node.get("published_file_sha256"), str) else set()
@@ -705,7 +705,7 @@ def _media_marks_read(owner_scope: str) -> dict[str, Any]:
         target = _media_marks_scratch_file()
         if not target.exists():
             return {"exists": False, "revision": 0, "updated_at": None, "items": {}}
-        value = json.loads(target.read_text(encoding="utf-8"))
+        value = json.loads(_win_io.read_text(target, encoding="utf-8"))
         if not isinstance(value, dict) or value.get("schema") != _MEDIA_MARKS_SCHEMA or not isinstance(value.get("items"), dict) or type(value.get("revision")) is not int:
             raise studio_core.ProjectError("project_unavailable", "media marks are damaged")
         return {"exists": True, "revision": value["revision"], "updated_at": value.get("updated_at"), "items": value["items"]}
@@ -757,7 +757,7 @@ def _media_marks_write(request: MediaMarksWriteRequest) -> dict[str, Any]:
         temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
         try:
             temporary.write_text(json.dumps(document, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-            os.replace(temporary, target)
+            _win_io.replace(temporary, target)
         finally:
             temporary.unlink(missing_ok=True)
         return {"exists": True, "revision": document["revision"], "updated_at": document["updated_at"], "items": items}

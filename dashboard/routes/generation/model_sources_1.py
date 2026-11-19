@@ -125,7 +125,7 @@ def _model_file_sha256(path: Path) -> str:
     with _MODEL_HASH_LOCK:
         cache_path = _model_hash_cache_path()
         try:
-            cache = json.loads(cache_path.read_text(encoding="utf-8"))
+            cache = json.loads(_win_io.read_text(cache_path, encoding="utf-8"))
         except Exception:  # noqa: BLE001 - no cache yet
             cache = {}
         if isinstance(cache.get(key), str):
@@ -137,14 +137,14 @@ def _model_file_sha256(path: Path) -> str:
     value = digest.hexdigest()
     with _MODEL_HASH_LOCK:
         try:
-            cache = json.loads(cache_path.read_text(encoding="utf-8"))
+            cache = json.loads(_win_io.read_text(cache_path, encoding="utf-8"))
         except Exception:  # noqa: BLE001
             cache = {}
         cache[key] = value
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = cache_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(cache), encoding="utf-8")
-        os.replace(tmp, cache_path)
+        _win_io.replace(tmp, cache_path)
     return value
 
 
@@ -212,7 +212,7 @@ def _models_missing(workflow: str | None) -> dict[str, Any]:
     root = _models_root()
     with _MODEL_HASH_LOCK:
         try:
-            hash_cache = json.loads(_model_hash_cache_path().read_text(encoding="utf-8"))
+            hash_cache = json.loads(_win_io.read_text(_model_hash_cache_path(), encoding="utf-8"))
         except Exception:  # noqa: BLE001 - no cache yet
             hash_cache = {}
     if not isinstance(hash_cache, dict):

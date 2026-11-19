@@ -170,15 +170,19 @@ async def image_preview_live(request: Request) -> Any:
             inserted = edit_adapter.live_preview_node(prompt_id)
             known = True
         probe = adapter.live_preview_probe_state() if adapter is not None else None
+        # w46-eg E-a: the engine's own frames (preview_method at submit) are a picture without any preview node.
+        native = bool((live or {}).get("frame_seq")) and not (live or {}).get("image_b64")
         if inserted:
             preview = "on"
+        elif native:
+            preview = "native"
         elif known or probe is False:
             preview = "node_missing"
         elif not hub.available:
             preview = "unavailable"
         else:
             preview = "unknown"
-        rev = int((live or {}).get("rev") or 0) * 16 + {"queued": 1, "running": 2, "no_preview": 3, "connecting": 4,
+        rev = (int((live or {}).get("rev") or 0) + int((live or {}).get("frame_seq") or 0)) * 16 + {"queued": 1, "running": 2, "no_preview": 3, "connecting": 4,
                                                          "done": 5, "error": 6, "interrupted": 7, "unavailable": 8}.get(state, 0)
         etag = f'W/"{job_id[7:15]}-{rev}"'
         head = {"schema": _LIVE_PREVIEW_SCHEMA, "image_producer_job_id": job_id, "owner_scope": scope,
@@ -187,11 +191,16 @@ async def image_preview_live(request: Request) -> Any:
             return JSONResponse({**head, "unchanged": True}, headers={"ETag": etag, "Cache-Control": "no-store"})
         live = live or {}
         terminal = state in {"done", "error", "interrupted"}
+        image_b64, mime = live.get("image_b64"), live.get("mime")
+        if native and not terminal:
+            url = await hub.data_url(prompt_id)  # the latest engine frame, small JPEG
+            if url and url.startswith("data:") and ";base64," in url:
+                mime, image_b64 = url[5:].split(";base64,", 1)
         body = {**head, "unchanged": False,
                 **{key: live.get(key) for key in ("step", "total", "w", "h", "sigma", "delta", "step_ms", "avg_step_ms", "eta_ms")},
                 "source": live.get("source"),
                 "sigmas": live.get("sigmas") or [], "deltas": live.get("deltas") or [], "step_times": live.get("step_times") or [],
-                "image_b64": None if terminal else live.get("image_b64"), "mime": None if terminal else live.get("mime")}
+                "image_b64": None if terminal else image_b64, "mime": None if terminal else mime}
         return JSONResponse(body, headers={"ETag": etag, "Cache-Control": "no-store"})
     except studio_core.ProjectError as exc:
         return _project_error_response(exc)

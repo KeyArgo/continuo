@@ -29,6 +29,17 @@ def _source_head(item: Mapping[str, Any], lost: int, rate: Fraction) -> int:
     return int(exact) if exact.denominator == 1 else int(exact + Fraction(1, 2))
 
 
+def frame_span(item: Mapping[str, Any], head: int) -> list[int] | None:
+    """Lane w46-d: a piece of a framed clip that starts ``head`` record frames into it keeps the whole clip's move:
+    ``[offset of its first frame in the whole clip, the whole clip's length]`` (model.PlanClip.frame_offset/_whole)."""
+    if not isinstance(item.get("frame"), Mapping) or item["frame"].get("move") is None:
+        return None
+    span, part = item.get("__frame_span"), item["frame"]["move"].get("part")  # part: lane w47-p3, a split clip's frames of the move
+    offset, whole = (span[0], span[1]) if isinstance(span, (list, tuple)) else \
+        (part["at"], part["of"]) if isinstance(part, Mapping) else (0, int(item["duration_frames"]))
+    return [int(offset) + head, int(whole)]
+
+
 def _crop_sound(items: list[Any], in_frame: int, out_frame: int, rate: Fraction) -> list[dict[str, Any]]:
     """A1-A3 (lane p13-cut, CUT-116): every sound clip is cut like a V2 clip (Resolve Deliver In/Out renders
     every track; FCPXML gives every audio asset-clip its own offset/start). Volume keys sit in source frames, so
@@ -90,6 +101,9 @@ def crop_document(document: Mapping[str, Any], in_frame: int, out_frame: int, *,
                     continue
                 piece = dict(item)
                 piece["duration_frames"] = b - a
+                span = frame_span(item, a - start) if piece.get("type") == "clip" else None
+                if span is not None:
+                    piece["__frame_span"] = span
                 if a > start and piece.get("type") == "clip" and "source_in_frame" in piece:
                     piece["source_in_frame"] = int(piece["source_in_frame"]) + _source_head(item, a - start, rate)
                 kept.append(piece)

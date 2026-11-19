@@ -31,6 +31,11 @@ import subprocess
 import urllib.request
 import uuid
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_video_upscale_win_io", Path(__file__).resolve().parents[1] / "studio_core" / "win_io.py")
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any, Mapping
 
 # One minimal environment for every child process (lane w39-env): dashboard/engine_process, loaded by path.
@@ -415,7 +420,7 @@ def read_remembered(project_directory: str | Path) -> dict[str, Any]:
     """The project's remembered choice (empty when none or unreadable)."""
     path = Path(project_directory).joinpath(*STATE_FILE)
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(_win_io.read_text(path, encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     if not isinstance(payload, dict) or payload.get("schema") != STATE_SCHEMA or not isinstance(payload.get("settings"), dict):
@@ -432,7 +437,7 @@ def write_remembered(project_directory: str | Path, settings: Mapping[str, Any])
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".part")
     temporary.write_text(json.dumps({"schema": STATE_SCHEMA, "settings": remembered}, indent=1), encoding="utf-8")
-    temporary.replace(path)
+    _win_io.replace(temporary, path)
     return remembered
 
 

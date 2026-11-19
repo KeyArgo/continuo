@@ -21,6 +21,11 @@ import threading
 import time
 import uuid
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_image_bridge_win_io", Path(__file__).resolve().parent / "studio_core" / "win_io.py")
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any, Callable
 
 # Store hygiene (Weg A1): a window that has not reported for a day is gone;
@@ -1219,6 +1224,11 @@ def _validate_state(state: Any) -> dict[str, Any]:
 
 # --- actions --------------------------------------------------------------
 
+def new_action_id() -> str:
+    """A fresh bridge action id (w45-s20 item 2: allocated before the action is enqueued)."""
+    return "act_" + uuid.uuid4().hex
+
+
 def validate_action_payload(action: Any, payload: Any) -> dict[str, Any]:
     """Return a canonical payload or raise; unknown actions and fields fail."""
     if action not in ALLOWED_ACTIONS:
@@ -1879,7 +1889,7 @@ def _semantic_state(value: Any) -> Any:
 
 def _read_json(path: Path) -> dict[str, Any] | None:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(_win_io.read_text(path, encoding="utf-8"))
     except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     return value if isinstance(value, dict) else None
@@ -1895,7 +1905,7 @@ def _atomic_write(path: Path, value: dict[str, Any], *, durable: bool = True) ->
             handle.flush()
             if durable:
                 os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        _win_io.replace(temporary, path)
     finally:
         try:
             os.unlink(temporary)
@@ -2077,15 +2087,27 @@ class ImageBridgeStore:
         payload: dict[str, Any],
         expected_revision: int | None = None,
         context_key: str | None = None,
+        action_id: str | None = None,
+        operation_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         window_id = _window_id(window_id)
         payload = validate_action_payload(action, payload)
+        # w47-q4 item 1: the operation ids the Hermes tool pre-allocated for this action (one per Vary cell / per submit),
+        # stored with its author grant before this record is written; the pane sends exactly these on its submits.
+        if operation_ids is not None and not (type(operation_ids) is list and 0 < len(operation_ids) <= 16
+                                              and len(set(operation_ids)) == len(operation_ids)
+                                              and all(type(op) is str and re.fullmatch(r"imgop_[0-9a-f]{32}", op) for op in operation_ids)):
+            _fail("operation_ids are invalid")
+        # w45-s20 item 2: the caller may allocate the id first (new_action_id), so what it binds to the id (the Hermes
+        # author grant) is durable before the action becomes visible to the pane.
+        if action_id is not None and not (type(action_id) is str and re.fullmatch(r"act_[0-9a-f]{32}", action_id)):
+            _fail("action_id is invalid")
         if expected_revision is not None:
             _integer(expected_revision, "expected_revision", 1, 2**53 - 1)
         if context_key is not None:
             _text(context_key, "context_key", 160, allow_empty=False)
         created_at = float(self.clock())
-        action_id = "act_" + uuid.uuid4().hex
+        action_id = action_id or new_action_id()
         record = {
             "schema": ACTION_SCHEMA,
             "action_id": action_id,
@@ -2097,6 +2119,8 @@ class ImageBridgeStore:
             "created_at": created_at,
             "expires_at": created_at + ACTION_TTL_SECONDS,
         }
+        if operation_ids is not None:
+            record["operation_ids"] = list(operation_ids)
         _atomic_write(self._pending_path(window_id, action_id), record)
         return record
 

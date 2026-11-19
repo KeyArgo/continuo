@@ -197,7 +197,9 @@ class ImageProducerCoordinator:
             # resubmitted; not found there, it settles (submit-reconciliation-required) instead of running forever.
             if job["state"] == "submitting" and self._older_than(job, _SUBMIT_STUCK_SECONDS):
                 return self._public(await self._recover_locked(job))
-            if job["state"] in {"accepted", "submitting", "failed", "cancelled", "quarantined", "published"}:
+            # "ingested" (w45-s14 item 2): the provider is done; only the local publication is left, finished by the
+            # collector - polling the provider again would refuse it (ready-state-not-running).
+            if job["state"] in {"accepted", "submitting", "failed", "cancelled", "quarantined", "ingested", "published"}:
                 return self._public(job)
             # A ready job is terminal for the provider: answer from the ledger
             # instead of asking again.  After a restart the descriptor cache is

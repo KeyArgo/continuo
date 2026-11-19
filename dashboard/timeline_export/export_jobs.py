@@ -30,6 +30,11 @@ import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_export_jobs_win_io", Path(__file__).resolve().parents[1] / "studio_core" / "win_io.py")
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any, Callable
 
 from .errors import ExportError
@@ -235,7 +240,7 @@ class ExportJobs:
     # --- the store ---------------------------------------------------------------------------------------------
     def _read_store(self, store: Path) -> tuple[list[dict[str, Any]], int]:
         try:
-            text: str | None = store.read_text(encoding="utf-8")
+            text: str | None = _win_io.read_text(store, encoding="utf-8")
         except FileNotFoundError:
             return [], 0
         except UnicodeError:
@@ -299,7 +304,7 @@ class ExportJobs:
                 fh.write(json.dumps({"schema": QUEUE_SCHEMA, "last_number": last, "jobs": rows}, ensure_ascii=False, default=str))
                 fh.flush()
                 os.fsync(fh.fileno())
-            os.replace(temp, store)
+            _win_io.replace(temp, store)
         except OSError as exc:
             try:
                 temp.unlink()

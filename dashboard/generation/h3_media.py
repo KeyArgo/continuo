@@ -33,6 +33,11 @@ import tempfile
 import urllib.request
 import uuid
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_h3_media_win_io", Path(__file__).resolve().parents[1] / "studio_core" / "win_io.py")
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any, Callable, Iterable, Mapping
 
 # One minimal environment for every child process (lane w39-env): dashboard/engine_process, loaded by path.
@@ -525,7 +530,7 @@ def _facts_path(root: str | os.PathLike[str], studio_job_id: str) -> Path:
 def read_take_facts(root: str | os.PathLike[str], studio_job_id: str) -> dict[str, Any] | None:
     path = _facts_path(root, studio_job_id)
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(_win_io.read_text(path, encoding="utf-8"))
     except (OSError, ValueError):
         return None
     if not isinstance(payload, dict) or payload.get("schema") != TAKE_FACTS_SCHEMA or payload.get("studio_job_id") != studio_job_id:
@@ -546,7 +551,7 @@ def merge_take_facts(root: str | os.PathLike[str], studio_job_id: str, update: M
             json.dump(current, stream, ensure_ascii=False, sort_keys=True)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, _facts_path(root, studio_job_id))
+        _win_io.replace(temporary, _facts_path(root, studio_job_id))
     except BaseException:
         try:
             os.unlink(temporary)

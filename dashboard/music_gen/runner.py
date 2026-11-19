@@ -25,6 +25,11 @@ import sys
 import time
 import uuid
 from pathlib import Path
+# Lane w47-q3: the one Windows file-sharing retry rule for replaced state files (studio_core/win_io.py, stdlib, by path).
+import importlib.util as _win_io_import
+_win_io_spec = _win_io_import.spec_from_file_location("film_suite_music_runner_win_io", Path(__file__).resolve().parents[1] / "studio_core" / "win_io.py")
+_win_io = _win_io_import.module_from_spec(_win_io_spec)
+_win_io_spec.loader.exec_module(_win_io)
 from typing import Any, Callable, Mapping
 
 # One minimal environment for every child process (lane w39-env): dashboard/engine_process, loaded by path.
@@ -193,7 +198,7 @@ def run_take(
                 raise MusicRunError("name_taken", "A file of that name is already there")
             temporary = save_path.with_name(f".{save_path.name}.{uuid.uuid4().hex}.tmp")
             temporary.write_bytes(data)
-            os.replace(temporary, save_path)
+            _win_io.replace(temporary, save_path)
             measured = measure_samples(save_path, ffmpeg)
             expected = expected_seconds(target, stage, values)
             facts.update(measured)
@@ -220,6 +225,10 @@ from pathlib import Path as _EndpointPath
 _endpoint_spec = _endpoint_util.spec_from_file_location("film_suite_comfy_endpoint", _EndpointPath(__file__).resolve().parents[1] / "generation" / "comfy_endpoint.py")
 _endpoint = _endpoint_util.module_from_spec(_endpoint_spec)
 _endpoint_spec.loader.exec_module(_endpoint)
+# w47-q2: every /prompt is noted (generation/engine_idle.py, loaded by path); models are freed after Continuo goes idle.
+_idle_spec = _endpoint_util.spec_from_file_location("film_suite_engine_idle", _EndpointPath(__file__).resolve().parents[1] / "generation" / "engine_idle.py")
+_idle = _endpoint_util.module_from_spec(_idle_spec)
+_idle_spec.loader.exec_module(_idle)
 
 class ComfyHTTP:
     """The real ComfyUI side over the configured ComfyUI HTTP API (comfy_endpoint)."""
@@ -247,8 +256,10 @@ class ComfyHTTP:
         try:
             answer = self._json("POST", "/prompt", body, {"Content-Type": "application/json"})
         except Exception as exc:  # noqa: BLE001
+            _idle.note_engine_use()  # w47-q2: a lost answer may still have queued it
             detail = getattr(exc, "read", lambda: b"")()
             raise MusicRunError("engine_refused", "The engine refused the take: " + detail.decode("utf-8", "replace")[:200]) from exc
+        _idle.note_engine_use()
         prompt_id = answer.get("prompt_id")
         if type(prompt_id) is not str:
             raise MusicRunError("engine_refused", "The engine refused the take")

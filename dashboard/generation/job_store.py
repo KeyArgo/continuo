@@ -18,6 +18,7 @@ import ntpath
 import os
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -1195,6 +1196,38 @@ CREATE UNIQUE INDEX IF NOT EXISTS studio_jobs_one_active_comfy_connection
 CREATE INDEX IF NOT EXISTS studio_jobs_state_index ON studio_jobs(state);
 {_DURABILITY_TRIGGERS}
 """
+_OPENERS_LOCK = threading.Lock()
+_OPENERS: dict[str, threading.Lock] = {}
+
+
+def _opener_lock(path: Path) -> threading.Lock:
+    """Lane w45-s9 item 3: the lock of one ledger file in this process. Two threads opening a fresh ledger at once
+    both created its schema (one failed "table studio_jobs already exists"), and an opener's journal-mode switch does
+    not wait for another's create transaction ("database is locked"); one opener at a time creates, the others then
+    find it made. Other processes are kept apart by _migrate's write transaction."""
+    try:
+        key = os.path.normcase(str(path.resolve()))
+    except OSError:
+        key = os.path.normcase(str(path))
+    with _OPENERS_LOCK:
+        return _OPENERS.setdefault(key, threading.Lock())
+
+
+def _schema_statements(script: str) -> list[str]:
+    """The statements of a schema script, one each (trigger bodies stay whole: sqlite3.complete_statement knows them),
+    so they can run inside a transaction the caller holds (executescript would commit it first)."""
+    statements, current = [], ""
+    for part in script.split(";"):
+        current += part + ";"
+        if sqlite3.complete_statement(current):
+            if current.strip(" \t\r\n;"):
+                statements.append(current.strip())
+            current = ""
+    if current.strip(" \t\r\n;"):
+        raise SchemaError("Studio ledger schema script is incomplete")
+    return statements
+
+
 _SCHEMA_INDEX_STATEMENTS = (
     ("studio_jobs_provider_identity", """
         CREATE UNIQUE INDEX studio_jobs_provider_identity
@@ -1415,7 +1448,8 @@ class JobStore:
         self._clock = clock or time.time
         self._closed = False
         self._ensure_parent()
-        self._migrate()
+        with _opener_lock(self.path):  # w45-s9 item 3: one opener of a ledger at a time in this process
+            self._migrate()
 
     def _ensure_parent(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1553,36 +1587,29 @@ class JobStore:
         self._validate_migration_durable_state(connection)
 
     def _migrate(self) -> None:
+        # Lane w45-s9 item 3: the version is read and acted on under ONE write lock. Read before it, two openers of a
+        # fresh ledger (two threads' first job) both saw 0 and both ran the create script; the later one failed with
+        # "table studio_jobs already exists". Now one creates and every other opener waits for it and reads its version.
         connection = self._connect()
         try:
-            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version > SCHEMA_VERSION:
-                raise SchemaError(f"unsupported Studio ledger schema version: {version}")
-            if version == 0:
-                connection.executescript(
-                    "BEGIN IMMEDIATE;\n"
-                    + _CREATE_SCHEMA
-                    + f"\nPRAGMA user_version={SCHEMA_VERSION};\nCOMMIT;"
-                )
-            elif version in {1, 2, 3}:
-                connection.execute("BEGIN IMMEDIATE")
-                try:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+                if version > SCHEMA_VERSION:
+                    raise SchemaError(f"unsupported Studio ledger schema version: {version}")
+                if version == 0:
+                    for statement in _schema_statements(_CREATE_SCHEMA + f"\nPRAGMA user_version={SCHEMA_VERSION};"):
+                        connection.execute(statement)
+                elif version in {1, 2, 3}:
                     self._rebuild_legacy_to_v4(connection)
-                    connection.execute("COMMIT")
-                except Exception:
-                    if connection.in_transaction:
-                        connection.execute("ROLLBACK")
-                    raise
-            elif version == SCHEMA_VERSION:
-                connection.execute("BEGIN IMMEDIATE")
-                try:
+                elif version == SCHEMA_VERSION:
                     self._validate_migration_durable_state(connection)
                     self._install_durability_triggers(connection)
-                    connection.execute("COMMIT")
-                except Exception:
-                    if connection.in_transaction:
-                        connection.execute("ROLLBACK")
-                    raise
+                connection.execute("COMMIT")
+            except Exception:
+                if connection.in_transaction:
+                    connection.execute("ROLLBACK")
+                raise
         finally:
             connection.close()
         try:
@@ -2129,6 +2156,10 @@ class JobStore:
                 raise _invalid("terminal lifecycle state is write-once")
             if row["provider_job_id"] is not None:
                 raise _invalid("cannot finish a submit that already has a provider job")
+            if current_state == "queued" and row["provider_id"] == "comfyui-local":
+                # w47-u1 item 1b: a local row handed to ComfyUI without its prompt id (sending) ends only through
+                # give_up_sending_v4, after its tombstone was written: never by this unconditional finish.
+                raise _invalid("a sending local submit ends only through its tombstoned give-up")
             completed_at = row["completed_at"] if row["completed_at"] is not None else timestamp
             connection.execute(
                 """
@@ -2151,6 +2182,129 @@ class JobStore:
             raise
         finally:
             connection.close()
+
+    def cas_unsent_v4(
+        self,
+        *,
+        studio_job_id: str,
+        expected_project_id: str | None,
+        to: str,
+        reason_code: str | None = None,
+    ) -> tuple[bool, JobRecord]:
+        """w47-t1 item 1 (cr50 H7): the one conditional move of a submit that was never handed to the provider.
+
+        Only a row still ``submitting`` with no provider job id moves, in one write transaction:
+        ``to='sending'`` -> ``queued`` without a provider id (the sender may POST now; no other party may end it as
+        unsent any more), or ``to`` a non-ready terminal state with ``reason_code`` (it can never be sent). Of a sender
+        and a giver-up exactly one wins. Answers (moved, the row as it is now)."""
+        studio_job_id = self._text(studio_job_id, "studio_job_id")
+        expected_project_id = self._v4_project_id(expected_project_id)
+        target = "queued" if to == "sending" else self._state(to)
+        if target != "queued" and (target not in _TERMINAL_STATES or target == "ready"):
+            raise _invalid("an unsent submit moves to sending or a non-ready terminal state")
+        normalized_reason = _normalize_transition_reason(reason_code) if target != "queued" else None
+        if target != "queued" and normalized_reason is None:
+            raise _invalid("terminal_status requires a reason_code")
+        timestamp = self._now()
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT * FROM studio_jobs WHERE studio_job_id = ?", (studio_job_id,)).fetchone()
+            if row is None:
+                raise JobNotFoundError()
+            self._assert_v4_scope(row, expected_project_id)
+            if self._row_state(row["state"]) != "submitting" or row["provider_job_id"] is not None:
+                connection.execute("COMMIT")
+                return False, self._row_to_record(row)
+            if target == "queued":
+                connection.execute("UPDATE studio_jobs SET state = 'queued', updated_at = ? WHERE studio_job_id = ?"
+                                   " AND state = 'submitting' AND provider_job_id IS NULL", (timestamp, studio_job_id))
+            else:
+                completed_at = row["completed_at"] if row["completed_at"] is not None else timestamp
+                connection.execute("UPDATE studio_jobs SET state = ?, reason_code = ?, updated_at = ?, completed_at = ?"
+                                   " WHERE studio_job_id = ? AND state = 'submitting' AND provider_job_id IS NULL",
+                                   (target, normalized_reason, timestamp, completed_at, studio_job_id))
+            updated = connection.execute("SELECT * FROM studio_jobs WHERE studio_job_id = ?", (studio_job_id,)).fetchone()
+            connection.execute("COMMIT")
+            return True, self._row_to_record(updated)
+        except sqlite3.IntegrityError as exc:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise _invalid() from exc
+        except Exception:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+        finally:
+            connection.close()
+
+    def _conditional_v4(self, studio_job_id: str, expected_project_id: str | None, decide: Callable[[Any], Any]) -> tuple[bool, JobRecord]:
+        """One write transaction: read the row, let ``decide`` answer (sql, params) or None (no move)."""
+        studio_job_id = self._text(studio_job_id, "studio_job_id")
+        expected_project_id = self._v4_project_id(expected_project_id)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT * FROM studio_jobs WHERE studio_job_id = ?", (studio_job_id,)).fetchone()
+            if row is None:
+                raise JobNotFoundError()
+            self._assert_v4_scope(row, expected_project_id)
+            move = decide(row)
+            if move is None or connection.execute(*move).rowcount != 1:
+                connection.execute("COMMIT")
+                return False, self._row_to_record(row)
+            updated = connection.execute("SELECT * FROM studio_jobs WHERE studio_job_id = ?", (studio_job_id,)).fetchone()
+            connection.execute("COMMIT")
+            return True, self._row_to_record(updated)
+        except sqlite3.IntegrityError as exc:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise _invalid() from exc
+        except Exception:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+        finally:
+            connection.close()
+
+    def bind_unsent_v4(self, *, studio_job_id: str, expected_project_id: str | None,
+                       provider_job_id: str) -> tuple[bool, JobRecord]:
+        """w47-u1 item 1a: the sender binds its prompt id by ONE conditional move: only a row still unsent or sending
+        (``submitting`` / ``queued`` with no provider id) takes it (-> ``queued`` with the id). A row given up or
+        cancelled meanwhile does not: (False, the row as it is). The same id bound twice answers (True, row)."""
+        provider_job_id = self._text(provider_job_id, "provider_job_id")
+        timestamp = self._now()
+
+        def decide(row: Any) -> Any:
+            if row["provider_job_id"] is not None or self._row_state(row["state"]) not in ("submitting", "queued"):
+                return None
+            return ("UPDATE studio_jobs SET provider_job_id = ?, state = 'queued', queued_at = COALESCE(queued_at, ?),"
+                    " updated_at = ? WHERE studio_job_id = ? AND provider_job_id IS NULL AND state IN ('submitting', 'queued')",
+                    (provider_job_id, timestamp, timestamp, row["studio_job_id"]))
+        bound, record = self._conditional_v4(studio_job_id, expected_project_id, decide)
+        if not bound and record.provider_job_id == provider_job_id:
+            return True, record
+        return bound, record
+
+    def give_up_sending_v4(self, *, studio_job_id: str, expected_project_id: str | None, to: str,
+                           reason_code: str) -> tuple[bool, JobRecord]:
+        """w47-u1 item 1b: a row that is ``sending`` (``queued`` with no provider id) ends ``to`` (a non-ready terminal
+        state) by ONE conditional move, only while it is still sending. The caller wrote the row's tombstone first."""
+        target = self._state(to)
+        if target not in _TERMINAL_STATES or target == "ready":
+            raise _invalid("a sending row is given up to a non-ready terminal state")
+        normalized_reason = _normalize_transition_reason(reason_code)
+        if normalized_reason is None:
+            raise _invalid("terminal_status requires a reason_code")
+        timestamp = self._now()
+
+        def decide(row: Any) -> Any:
+            if row["provider_job_id"] is not None or self._row_state(row["state"]) != "queued":
+                return None
+            return ("UPDATE studio_jobs SET state = ?, reason_code = ?, updated_at = ?, completed_at = COALESCE(completed_at, ?)"
+                    " WHERE studio_job_id = ? AND state = 'queued' AND provider_job_id IS NULL",
+                    (target, normalized_reason, timestamp, timestamp, row["studio_job_id"]))
+        return self._conditional_v4(studio_job_id, expected_project_id, decide)
 
     def transition_scoped(
         self,
@@ -2358,6 +2512,26 @@ class JobStore:
             if len(records) >= limit:
                 break
         return records
+
+    def active_rows(self, connection_id: str) -> list[JobRecord]:
+        """The local rows of one connection in submitting/queued/running (the rows the one-active index counts).
+
+        Lane w45-s6 item 3: what generation/take_owner.settle reads before a music or voice take is admitted."""
+        connection_id = self._text(connection_id, "connection_id")
+        connection = self._connect()
+        try:
+            rows = connection.execute(
+                """
+                SELECT * FROM studio_jobs
+                WHERE provider_id = 'comfyui-local' AND connection_id = ?
+                  AND state IN ('submitting','queued','running')
+                ORDER BY created_at, rowid
+                """,
+                (connection_id,),
+            ).fetchall()
+        finally:
+            connection.close()
+        return [self._row_to_record(row) for row in rows]
 
     def count_jobs(self) -> int:
         connection = self._connect()
